@@ -1,27 +1,113 @@
 name: GPTHost Build
-  on:
-    workflow_dispatch:
-      inputs:
-        project_id:
-          description: 'Project ID'
-          required: true
-        framework:
-          description: 'Framework type'
-          required: true
-        source_files:
-          description: 'Source files JSON'
-          required: false
-        build_config:
-          description: 'Build configuration JSON'
-          required: false
 
-  jobs:
-    build:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: actions/checkout@v4
-        - uses: actions/setup-node@v4
-          with:
-            node-version: '18'
-        - run: npm install
-        - run: npm run build
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'Project ID for the build'
+        required: true
+        type: string
+      framework:
+        description: 'Framework type (react, vue, svelte, etc.)'
+        required: true
+        type: string
+      source_files:
+        description: 'Source files as JSON string'
+        required: false
+        type: string
+      build_config:
+        description: 'Build configuration as JSON string'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      # Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 'projects/${{ github.event.inputs.project_id }}/package.json'
+      
+      # Navigate to project directory
+      - name: Navigate to project directory
+        run: |
+          echo "📁 Project ID: ${{ github.event.inputs.project_id }}"
+          echo "🔧 Framework: ${{ github.event.inputs.framework }}"
+          cd projects/${{ github.event.inputs.project_id }}
+          ls -la
+      
+      # Install dependencies
+      - name: Install dependencies
+        working-directory: projects/${{ github.event.inputs.project_id }}
+        run: |
+          echo "📦 Installing dependencies..."
+          npm install
+          
+      # Build the project
+      - name: Build project
+        working-directory: projects/${{ github.event.inputs.project_id }}
+        run: |
+          echo "🔨 Building project..."
+          npm run build
+          
+      # List build output
+      - name: List build output
+        working-directory: projects/${{ github.event.inputs.project_id }}
+        run: |
+          echo "📋 Build output:"
+          ls -la dist/ || ls -la build/ || echo "No standard build directory found"
+          
+      # Upload build artifacts
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-${{ github.event.inputs.project_id }}
+          path: |
+            projects/${{ github.event.inputs.project_id }}/dist/
+            projects/${{ github.event.inputs.project_id }}/build/
+          if-no-files-found: warn
+          
+      # Create deployment info file
+      - name: Create deployment info
+        working-directory: projects/${{ github.event.inputs.project_id }}
+        run: |
+          echo "{
+            \"project_id\": \"${{ github.event.inputs.project_id }}\",
+            \"framework\": \"${{ github.event.inputs.framework }}\",
+            \"build_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+            \"build_number\": \"${{ github.run_number }}\",
+            \"commit_sha\": \"${{ github.sha }}\"
+          }" > deployment-info.json
+          
+      # Upload deployment info
+      - name: Upload deployment info
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-info-${{ github.event.inputs.project_id }}
+          path: projects/${{ github.event.inputs.project_id }}/deployment-info.json
+          
+      # Success notification
+      - name: Build success
+        if: success()
+        run: |
+          echo "✅ Build completed successfully!"
+          echo "Project: ${{ github.event.inputs.project_id }}"
+          echo "Framework: ${{ github.event.inputs.framework }}"
+          echo "Build artifacts have been uploaded"
+          
+      # Failure notification
+      - name: Build failure
+        if: failure()
+        run: |
+          echo "❌ Build failed!"
+          echo "Project: ${{ github.event.inputs.project_id }}"
+          echo "Check the logs above for error details"
