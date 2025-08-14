@@ -1,4 +1,4 @@
-  name: GPTHost Build
+name: GPTHost Build
   on:
     workflow_dispatch:
       inputs:
@@ -8,6 +8,12 @@
         framework:
           description: 'Framework type'
           required: true
+        source_files:
+          description: 'Source files JSON'
+          required: false
+        build_config:
+          description: 'Build configuration JSON'
+          required: false
 
   jobs:
     build:
