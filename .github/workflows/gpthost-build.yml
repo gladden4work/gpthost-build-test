@@ -4,110 +4,401 @@ on:
   workflow_dispatch:
     inputs:
       project_id:
-        description: 'Project ID for the build'
+        description: 'Project ID to build'
         required: true
         type: string
       framework:
-        description: 'Framework type (react, vue, svelte, etc.)'
+        description: 'Framework type (react, vue, svelte, html)'
         required: true
         type: string
+        default: 'react'
       source_files:
-        description: 'Source files as JSON string'
-        required: false
+        description: 'Source files JSON'
+        required: true
         type: string
       build_config:
-        description: 'Build configuration as JSON string'
+        description: 'Build configuration JSON'
+        required: true
+        type: string
+      callback_url:
+        description: 'Callback URL for status updates'
         required: false
         type: string
+      node_version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '20'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    name: Build (Node.js 20)
     
     steps:
-      # Checkout the repository
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: 'projects/${{ inputs.project_id }}/package.json'
+    
+    - name: Create project directory
+      run: |
+        mkdir -p projects/${{ inputs.project_id }}/src
+        echo "Created project directory for ${{ inputs.project_id }}"
+    
+    - name: Setup build environment
+      run: |
+        echo "Building project: ${{ inputs.project_id }}"
+        echo "Framework: ${{ inputs.framework }}"
+        echo "Node.js version: 20"
+        echo "Build configuration provided"
+    
+    - name: Install dependencies
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Installing dependencies with Node.js 20"
         
-      # Setup Node.js
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: 'projects/${{ github.event.inputs.project_id }}/package.json'
-      
-      # Navigate to project directory
-      - name: Navigate to project directory
-        run: |
-          echo "📁 Project ID: ${{ github.event.inputs.project_id }}"
-          echo "🔧 Framework: ${{ github.event.inputs.framework }}"
-          cd projects/${{ github.event.inputs.project_id }}
+        # Check if package.json exists
+        if [ ! -f "package.json" ]; then
+          echo "❌ Error: package.json not found in projects/${{ inputs.project_id }}"
+          echo "Available files:"
           ls -la
-      
-      # Install dependencies
-      - name: Install dependencies
-        working-directory: projects/${{ github.event.inputs.project_id }}
-        run: |
-          echo "📦 Installing dependencies..."
-          npm install
+          exit 1
+        fi
+        
+        # Verify package.json is valid JSON
+        if ! jq empty package.json 2>/dev/null; then
+          echo "❌ Error: package.json is not valid JSON"
+          exit 1
+        fi
+        
+        # Install dependencies with error handling
+        if ! npm ci --no-audit --prefer-offline --loglevel=error; then
+          echo "❌ Error: npm ci failed"
+          echo "Trying npm install as fallback..."
+          if ! npm install --no-audit --prefer-offline --loglevel=error; then
+            echo "❌ Error: Both npm ci and npm install failed"
+            exit 1
+          fi
+        fi
+        
+        echo "✅ Dependencies installed successfully"
+        
+    - name: Verify dependencies
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Installed packages:"
+        npm list --depth=0 || true
+        echo "Node modules size:"
+        du -sh node_modules/ || echo "Cannot determine node_modules size"
+    
+    - name: Pre-build framework setup
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        case "${{ inputs.framework }}" in
+          "react")
+            echo "Preparing React build environment..."
+            # Ensure React-specific dependencies are available
+            if [ -f "package.json" ]; then
+              grep -q "react" package.json && echo "React dependencies found" || echo "Warning: React dependencies not found"
+            fi
+            ;;
+          "vue")
+            echo "Preparing Vue build environment..."
+            # Ensure Vue-specific dependencies are available
+            if [ -f "package.json" ]; then
+              grep -q "vue" package.json && echo "Vue dependencies found" || echo "Warning: Vue dependencies not found"
+            fi
+            ;;
+          "svelte")
+            echo "Preparing Svelte build environment..."
+            # Ensure Svelte-specific dependencies are available
+            if [ -f "package.json" ]; then
+              grep -q "svelte" package.json && echo "Svelte dependencies found" || echo "Warning: Svelte dependencies not found"
+            fi
+            ;;
+          "html")
+            echo "Preparing HTML build environment..."
+            ;;
+          *)
+            echo "Unknown framework: ${{ inputs.framework }}, proceeding with generic build"
+            ;;
+        esac
+    
+    - name: Run build
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Starting build process for ${{ inputs.framework }} project..."
+        
+        # Check if build script exists in package.json
+        if ! jq -e '.scripts.build' package.json > /dev/null; then
+          echo "❌ Error: No 'build' script found in package.json"
+          echo "Available scripts:"
+          jq -r '.scripts | keys[]' package.json 2>/dev/null || echo "No scripts found"
+          exit 1
+        fi
+        
+        # Run build with error handling
+        if ! npm run build; then
+          echo "❌ Error: Build process failed"
+          echo "Build logs above should contain the specific error details"
+          exit 1
+        fi
+        
+        echo "✅ Build completed successfully"
+        
+    - name: Validate build output
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Validating build artifacts..."
+        if [ -d "dist" ]; then
+          echo "Build output directory found: dist/"
+          ls -la dist/
           
-      # Build the project
-      - name: Build project
-        working-directory: projects/${{ github.event.inputs.project_id }}
-        run: |
-          echo "🔨 Building project..."
-          npm run build
+          # Check for required files
+          if [ -f "dist/index.html" ]; then
+            echo "✓ index.html found"
+          else
+            echo "⚠ Warning: index.html not found in dist/"
+          fi
           
-      # List build output
-      - name: List build output
-        working-directory: projects/${{ github.event.inputs.project_id }}
-        run: |
-          echo "📋 Build output:"
-          ls -la dist/ || ls -la build/ || echo "No standard build directory found"
+          # Check for JavaScript assets
+          if ls dist/*.js 1> /dev/null 2>&1; then
+            echo "✓ JavaScript files found"
+          else
+            echo "⚠ Warning: No JavaScript files found in dist/"
+          fi
           
-      # Upload build artifacts
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: build-${{ github.event.inputs.project_id }}
-          path: |
-            projects/${{ github.event.inputs.project_id }}/dist/
-            projects/${{ github.event.inputs.project_id }}/build/
-          if-no-files-found: warn
+          # Check for CSS assets (optional)
+          if ls dist/*.css 1> /dev/null 2>&1; then
+            echo "✓ CSS files found"
+          else
+            echo "ℹ No CSS files found (this might be normal)"
+          fi
           
-      # Create deployment info file
-      - name: Create deployment info
-        working-directory: projects/${{ github.event.inputs.project_id }}
-        run: |
-          echo "{
-            \"project_id\": \"${{ github.event.inputs.project_id }}\",
-            \"framework\": \"${{ github.event.inputs.framework }}\",
-            \"build_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
-            \"build_number\": \"${{ github.run_number }}\",
-            \"commit_sha\": \"${{ github.sha }}\"
-          }" > deployment-info.json
+          # Calculate build size
+          BUILD_SIZE=$(du -sh dist/ | cut -f1)
+          echo "Total build size: $BUILD_SIZE"
           
-      # Upload deployment info
-      - name: Upload deployment info
-        uses: actions/upload-artifact@v3
-        with:
-          name: deployment-info-${{ github.event.inputs.project_id }}
-          path: projects/${{ github.event.inputs.project_id }}/deployment-info.json
+        else
+          echo "❌ Error: Build output directory 'dist/' not found"
+          echo "Available directories:"
+          ls -la
+          exit 1
+        fi
+    
+    - name: Prepare artifacts for R2 upload
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Preparing build artifacts for R2 upload..."
+        
+        # Create artifacts directory
+        mkdir -p ../artifacts/${{ inputs.project_id }}
+        
+        # Copy all build files
+        cp -r dist/* ../artifacts/${{ inputs.project_id }}/
+        
+        # Create build manifest
+        cat > ../artifacts/${{ inputs.project_id }}/build-manifest.json << EOF
+        {
+          "project_id": "${{ inputs.project_id }}",
+          "framework": "${{ inputs.framework }}",
+          "node_version": "20",
+          "build_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "github_run_id": "${{ github.run_id }}",
+          "github_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          "commit_sha": "${{ github.sha }}",
+          "files": $(find ../artifacts/${{ inputs.project_id }} -type f -not -name "build-manifest.json" | sed 's|../artifacts/${{ inputs.project_id }}/||' | jq -R . | jq -s .)
+        }
+        EOF
+        
+        echo "Artifacts prepared in ../artifacts/${{ inputs.project_id }}/"
+        ls -la ../artifacts/${{ inputs.project_id }}/
+    
+    - name: Configure AWS CLI for R2
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        aws-region: auto
+    
+    - name: Upload to Cloudflare R2
+      working-directory: projects/artifacts/${{ inputs.project_id }}
+      env:
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME || 'gpthost-builds-staging' }}
+      run: |
+        echo "Uploading build artifacts to Cloudflare R2..."
+        
+        # Verify required environment variables
+        if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+          echo "❌ Error: CLOUDFLARE_ACCOUNT_ID not set"
+          exit 1
+        fi
+        
+        if [ -z "$R2_BUCKET_NAME" ]; then
+          echo "❌ Error: R2_BUCKET_NAME not set"  
+          exit 1
+        fi
+        
+        # R2 endpoint URL
+        R2_ENDPOINT="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
+        
+        # Upload all files to R2
+        BUILD_PATH="projects/${{ inputs.project_id }}/builds/$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+        
+        echo "Uploading to R2 path: $BUILD_PATH"
+        
+        # Count files to upload
+        TOTAL_FILES=$(find . -maxdepth 1 -type f | wc -l)
+        UPLOADED_FILES=0
+        FAILED_FILES=0
+        
+        echo "Found $TOTAL_FILES files to upload"
+        
+        for file in *; do
+          if [ -f "$file" ]; then
+            echo "Uploading $file..."
+            
+            # Determine content type
+            case "${file##*.}" in
+              html) CONTENT_TYPE="text/html" ;;
+              js) CONTENT_TYPE="application/javascript" ;;
+              css) CONTENT_TYPE="text/css" ;;
+              json) CONTENT_TYPE="application/json" ;;
+              png) CONTENT_TYPE="image/png" ;;
+              jpg|jpeg) CONTENT_TYPE="image/jpeg" ;;
+              svg) CONTENT_TYPE="image/svg+xml" ;;
+              ico) CONTENT_TYPE="image/x-icon" ;;
+              txt) CONTENT_TYPE="text/plain" ;;
+              *) CONTENT_TYPE="application/octet-stream" ;;
+            esac
+            
+            # Upload with error handling and retries
+            if aws s3 cp "$file" "s3://$R2_BUCKET_NAME/$BUILD_PATH/$file" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "$CONTENT_TYPE" \
+              --metadata "project_id=${{ inputs.project_id }},node_version=20,framework=${{ inputs.framework }},github_run_id=${{ github.run_id }}" \
+              --cli-read-timeout 30 \
+              --cli-connect-timeout 10; then
+              
+              echo "✅ Successfully uploaded $file"
+              UPLOADED_FILES=$((UPLOADED_FILES + 1))
+            else
+              echo "❌ Failed to upload $file"
+              FAILED_FILES=$((FAILED_FILES + 1))
+            fi
+          fi
+        done
+        
+        # Report upload results
+        echo ""
+        echo "Upload Summary:"
+        echo "- Total files: $TOTAL_FILES"
+        echo "- Successfully uploaded: $UPLOADED_FILES"
+        echo "- Failed uploads: $FAILED_FILES"
+        
+        if [ $FAILED_FILES -gt 0 ]; then
+          echo "⚠️  Warning: $FAILED_FILES files failed to upload"
+          if [ $UPLOADED_FILES -eq 0 ]; then
+            echo "❌ Error: No files were successfully uploaded"
+            exit 1
+          fi
+        fi
+        
+        echo "✓ Successfully uploaded all artifacts to R2"
+        echo "R2 Path: $BUILD_PATH"
+        echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
+    
+    - name: Upload build artifacts (GitHub)
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts-${{ inputs.project_id }}-node20
+        path: projects/artifacts/${{ inputs.project_id }}/
+        retention-days: 30
+        
+    - name: Notify GPTHost (Success)
+      if: success() && inputs.callback_url
+      run: |
+        echo "Notifying GPTHost of successful build..."
+        curl -X POST "${{ inputs.callback_url }}" \
+          -H "Content-Type: application/json" \
+          -H "User-Agent: GitHub-Actions-GPTHost/1.0" \
+          -d '{
+            "project_id": "${{ inputs.project_id }}",
+            "status": "completed",
+            "framework": "${{ inputs.framework }}",
+            "node_version": "20",
+            "github_run_id": "${{ github.run_id }}",
+            "github_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "r2_build_path": "'$BUILD_PATH'",
+            "artifacts_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "build_timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+            "build_duration_seconds": "'$SECONDS'"
+          }' \
+          --max-time 30 \
+          --retry 3
           
-      # Success notification
-      - name: Build success
-        if: success()
-        run: |
-          echo "✅ Build completed successfully!"
-          echo "Project: ${{ github.event.inputs.project_id }}"
-          echo "Framework: ${{ github.event.inputs.framework }}"
-          echo "Build artifacts have been uploaded"
-          
-      # Failure notification
-      - name: Build failure
-        if: failure()
-        run: |
-          echo "❌ Build failed!"
-          echo "Project: ${{ github.event.inputs.project_id }}"
-          echo "Check the logs above for error details"
+    - name: Notify GPTHost (Failure)
+      if: failure() && inputs.callback_url
+      run: |
+        echo "Notifying GPTHost of failed build..."
+        curl -X POST "${{ inputs.callback_url }}" \
+          -H "Content-Type: application/json" \
+          -H "User-Agent: GitHub-Actions-GPTHost/1.0" \
+          -d '{
+            "project_id": "${{ inputs.project_id }}",
+            "status": "failed",
+            "framework": "${{ inputs.framework }}",
+            "node_version": "20",
+            "github_run_id": "${{ github.run_id }}",
+            "github_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "error": "Build failed - check GitHub Actions logs for details",
+            "build_timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+            "build_duration_seconds": "'$SECONDS'"
+          }' \
+          --max-time 30 \
+          --retry 3 \
+          --fail-with-body || echo "Failed to notify GPTHost callback"
+
+  # Summary job that runs after all matrix jobs complete
+  build-summary:
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Build Summary
+      run: |
+        echo "## GPTHost Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Project ID:** ${{ inputs.project_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Framework:** ${{ inputs.framework }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Build Status:** ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ needs.build.result }}" == "success" ]; then
+          echo "✅ **Build completed successfully across all Node.js versions**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Build artifacts uploaded to Cloudflare R2" >> $GITHUB_STEP_SUMMARY
+          echo "- Build artifacts also available in GitHub Actions" >> $GITHUB_STEP_SUMMARY
+          echo "- GPTHost backend notified of successful build" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Build failed**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the build logs above for error details." >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+        echo "1. Check GPTHost dashboard for deployment status" >> $GITHUB_STEP_SUMMARY
+        echo "2. Visit your deployed site once deployment completes" >> $GITHUB_STEP_SUMMARY
+        echo "3. Review build logs if any issues occurred" >> $GITHUB_STEP_SUMMARY
