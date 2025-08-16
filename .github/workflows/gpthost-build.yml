@@ -7,10 +7,6 @@ on:
         description: 'Project ID'
         required: true
         type: string
-      source_files:
-        description: 'Source files as JSON object'
-        required: true
-        type: string
       build_config:
         description: 'Build configuration (package.json content)'
         required: true
@@ -96,36 +92,39 @@ jobs:
         echo "Project directory created successfully"
         ls -la projects/
 
-    # FIX 1: Copy uploaded project files to build directory
-    - name: Copy project files to build directory  
+    # Verify uploaded project files (no more JSON parsing needed)
+    - name: Verify uploaded project files  
       run: |
-        echo "Checking for uploaded project files..."
+        echo "Verifying uploaded project files..."
         
-        # Check if project files already exist in the repository
+        # Check if project files exist in the repository (they should have been uploaded before workflow dispatch)
         if [ -d "projects/${{ inputs.project_id }}" ]; then
           echo "✅ Found uploaded project files at projects/${{ inputs.project_id }}"
           
-          # Files are already there, just list them
+          # List the project structure
           echo "Project structure:"
           ls -la projects/${{ inputs.project_id }}/
+          
+          # Count source files
+          FILE_COUNT=$(find projects/${{ inputs.project_id }} -type f | wc -l)
+          echo "Total files found: $FILE_COUNT"
           
           # Check if package.json exists
           if [ -f "projects/${{ inputs.project_id }}/package.json" ]; then
             echo "✅ package.json found"
+            echo "Package.json contents:"
+            cat projects/${{ inputs.project_id }}/package.json | head -20
           else
-            echo "⚠️ package.json not found, extracting from build_config..."
+            echo "⚠️ package.json not found - will be created from build_config"
             echo '${{ inputs.build_config }}' | jq '.packageJson // {}' > projects/${{ inputs.project_id }}/package.json
           fi
         else
-          echo "❌ No uploaded files found, creating from inputs..."
-          mkdir -p projects/${{ inputs.project_id }}/src
-          
-          # Fallback: Create files from inputs if not uploaded
-          echo '${{ inputs.source_files }}' | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
-            mkdir -p "projects/${{ inputs.project_id }}/$(dirname "$filename")"
-            echo "$content" > "projects/${{ inputs.project_id }}/$filename"
-            echo "Created: projects/${{ inputs.project_id }}/$filename"
-          done
+          echo "❌ ERROR: No uploaded files found at projects/${{ inputs.project_id }}"
+          echo "Files must be uploaded to the repository before triggering the workflow."
+          echo "Available directories:"
+          ls -la projects/ 2>/dev/null || echo "No projects directory found"
+          ls -la . || echo "Repository root contents"
+          exit 1
           
           echo '${{ inputs.build_config }}' | jq '.packageJson // {}' > projects/${{ inputs.project_id }}/package.json
         fi
