@@ -96,24 +96,44 @@ jobs:
         echo "Project directory created successfully"
         ls -la projects/
 
-    # FIX 1: Add missing source file creation step (CRITICAL FIX)
-    - name: Create source files
-      working-directory: projects/${{ inputs.project_id }}
+    # FIX 1: Copy uploaded project files to build directory
+    - name: Copy project files to build directory  
       run: |
-        echo "Creating source files from input..."
-        echo '${{ inputs.source_files }}' | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
-          mkdir -p "$(dirname "$filename")"
-          echo "$content" > "$filename"
-          echo "Created: $filename"
-        done
+        echo "Checking for uploaded project files..."
         
-        # FIX 3: Extract package.json from build_config object (CRITICAL FIX)
-        echo "Creating package.json..."
-        echo '${{ inputs.build_config }}' | jq '.packageJson // {}' > package.json
+        # Check if project files already exist in the repository
+        if [ -d "projects/${{ inputs.project_id }}" ]; then
+          echo "✅ Found uploaded project files at projects/${{ inputs.project_id }}"
+          
+          # Copy all files from the uploaded project directory
+          cp -r projects/${{ inputs.project_id }}/* projects/${{ inputs.project_id }}/ 2>/dev/null || true
+          
+          echo "Project structure:"
+          ls -la projects/${{ inputs.project_id }}/
+          
+          # Check if package.json exists
+          if [ -f "projects/${{ inputs.project_id }}/package.json" ]; then
+            echo "✅ package.json found"
+          else
+            echo "⚠️ package.json not found, extracting from build_config..."
+            echo '${{ inputs.build_config }}' | jq '.packageJson // {}' > projects/${{ inputs.project_id }}/package.json
+          fi
+        else
+          echo "❌ No uploaded files found, creating from inputs..."
+          mkdir -p projects/${{ inputs.project_id }}/src
+          
+          # Fallback: Create files from inputs if not uploaded
+          echo '${{ inputs.source_files }}' | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
+            mkdir -p "projects/${{ inputs.project_id }}/$(dirname "$filename")"
+            echo "$content" > "projects/${{ inputs.project_id }}/$filename"
+            echo "Created: projects/${{ inputs.project_id }}/$filename"
+          done
+          
+          echo '${{ inputs.build_config }}' | jq '.packageJson // {}' > projects/${{ inputs.project_id }}/package.json
+        fi
         
-        echo "Source files and package.json created successfully"
-        ls -la src/
-        ls -la
+        echo "Final project structure:"
+        ls -la projects/${{ inputs.project_id }}/
 
     - name: Validate project structure
       working-directory: projects/${{ inputs.project_id }}
