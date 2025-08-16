@@ -105,9 +105,7 @@ jobs:
         if [ -d "projects/${{ inputs.project_id }}" ]; then
           echo "✅ Found uploaded project files at projects/${{ inputs.project_id }}"
           
-          # Copy all files from the uploaded project directory
-          cp -r projects/${{ inputs.project_id }}/* projects/${{ inputs.project_id }}/ 2>/dev/null || true
-          
+          # Files are already there, just list them
           echo "Project structure:"
           ls -la projects/${{ inputs.project_id }}/
           
