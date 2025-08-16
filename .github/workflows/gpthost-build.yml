@@ -102,14 +102,14 @@ jobs:
       run: |
         echo "Creating source files from input..."
         echo '${{ inputs.source_files }}' | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
-          mkdir -p "$(dirname "src/$filename")"
-          echo "$content" > "src/$filename"
-          echo "Created: src/$filename"
+          mkdir -p "$(dirname "$filename")"
+          echo "$content" > "$filename"
+          echo "Created: $filename"
         done
         
-        # FIX 3: Create package.json from build_config input (CRITICAL FIX)
+        # FIX 3: Extract package.json from build_config object (CRITICAL FIX)
         echo "Creating package.json..."
-        echo '${{ inputs.build_config }}' > package.json
+        echo '${{ inputs.build_config }}' | jq '.packageJson // {}' > package.json
         
         echo "Source files and package.json created successfully"
         ls -la src/
@@ -172,11 +172,11 @@ jobs:
         
         # Optimize npm install based on cache status
         if [ "${{ steps.cache-node-modules-exact.outputs.cache-hit }}" = "true" ]; then
-          echo "🎯 Using cached node_modules - running npm ci with --prefer-offline"
-          npm ci --production=false --prefer-offline --no-audit --no-fund
+          echo "🎯 Using cached node_modules - running npm install with --prefer-offline"
+          npm install --production=false --prefer-offline --no-audit --no-fund
         else
-          echo "📦 Full dependency installation - using optimized npm ci"
-          npm ci --production=false --no-audit --no-fund --timing
+          echo "📦 Full dependency installation - using npm install"
+          npm install --production=false --no-audit --no-fund --timing
         fi
         
         # Record completion time and calculate metrics
