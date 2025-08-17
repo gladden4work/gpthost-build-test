@@ -7,8 +7,12 @@ on:
         description: 'Project ID'
         required: true
         type: string
+      source_files:
+        description: 'Source files as JSON object'
+        required: true
+        type: string
       build_config:
-        description: 'Build configuration'
+        description: 'Build configuration (package.json content)'
         required: true
         type: string
       callback_url:
@@ -92,29 +96,24 @@ jobs:
         echo "Project directory created successfully"
         ls -la projects/
 
-    # Files are already uploaded to the repository before workflow trigger
-    # No need to create them from inputs
-    - name: Verify uploaded files
+    # FIX 1: Add missing source file creation step (CRITICAL FIX)
+    - name: Create source files
       working-directory: projects/${{ inputs.project_id }}
       run: |
-        echo "Verifying pre-uploaded project files..."
+        echo "Creating source files from input..."
+        echo '${{ inputs.source_files }}' | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
+          mkdir -p "$(dirname "src/$filename")"
+          echo "$content" > "src/$filename"
+          echo "Created: src/$filename"
+        done
         
-        # Check if files exist
-        if [ ! -f "package.json" ] && [ ! -f "App.jsx" ] && [ ! -f "index.html" ]; then
-          echo "ERROR: No project files found. Expected files to be pre-uploaded to projects/${{ inputs.project_id }}/"
-          exit 1
-        fi
+        # FIX 3: Create package.json from build_config input (CRITICAL FIX)
+        echo "Creating package.json..."
+        echo '${{ inputs.build_config }}' > package.json
         
-        echo "Found files:"
+        echo "Source files and package.json created successfully"
+        ls -la src/
         ls -la
-        
-        # If src directory exists, list its contents
-        if [ -d "src" ]; then
-          echo "Source files in src/:"
-          ls -la src/
-        fi
-        
-        echo "✅ Pre-uploaded files verified successfully"
 
     - name: Validate project structure
       working-directory: projects/${{ inputs.project_id }}
@@ -134,20 +133,17 @@ jobs:
           exit 1
         fi
         
-        # Check for source files - they might be in root or src directory
-        if [ -d "src" ] && [ -n "$(ls -A src 2>/dev/null)" ]; then
-          echo "Found source files in src directory"
-          find src -type f
-        elif [ -f "App.jsx" ] || [ -f "App.js" ] || [ -f "App.tsx" ] || [ -f "index.html" ]; then
-          echo "Found source files in root directory"
-          ls -la *.jsx *.js *.tsx *.html 2>/dev/null || true
-        else
-          echo "WARNING: No typical source files found, but continuing anyway"
+        # Check if source files exist
+        if [ ! -d "src" ] || [ -z "$(ls -A src)" ]; then
+          echo "ERROR: No source files found in src directory"
+          exit 1
         fi
         
         echo "Project structure validation passed"
         echo "Package.json contents:"
         cat package.json
+        echo "Source files:"
+        find src -type f
 
     # TASK-027: Install dependencies with cache optimization and metrics tracking
     - name: Install dependencies with cache optimization
@@ -203,10 +199,9 @@ jobs:
       run: |
         echo "Setting up build environment..."
         
-        # Create index.html if it doesn't exist (check both root and public)
-        if [ ! -f "index.html" ] && [ ! -f "public/index.html" ]; then
-          echo "Creating default index.html..."
-          cat > index.html << 'EOF'
+        # Create basic index.html if it doesn't exist
+        if [ ! -f "public/index.html" ]; then
+          cat > public/index.html << 'EOF'
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -216,15 +211,13 @@ jobs:
         </head>
         <body>
           <div id="root"></div>
-          <script type="module" src="/src/index.jsx"></script>
         </body>
         </html>
         EOF
         fi
         
-        # Vite config should already be uploaded, but create a fallback if missing
+        # Create vite config if it doesn't exist
         if [ ! -f "vite.config.js" ] && [ ! -f "vite.config.ts" ]; then
-          echo "Creating default vite.config.js..."
           cat > vite.config.js << 'EOF'
         import { defineConfig } from 'vite'
         import react from '@vitejs/plugin-react'
@@ -239,9 +232,7 @@ jobs:
         EOF
         fi
         
-        echo "Build configuration ready"
-        echo "Files in project directory:"
-        ls -la
+        echo "Build configuration created"
 
     # TASK-027: Build project with performance metrics and cache-aware optimization
     - name: Build project with performance tracking
@@ -323,13 +314,27 @@ jobs:
         # Copy build output to artifacts directory
         cp -r projects/${{ inputs.project_id }}/dist/* artifacts/${{ inputs.project_id }}/
         
-        # Create build manifest
-        cat > artifacts/${{ inputs.project_id }}/build-manifest.json << EOF
+        # Create build manifest that deployment manager expects
+        BUILD_ARTIFACTS=$(find . -type f -name "*.js" -o -name "*.css" -o -name "*.html" -o -name "*.json" | while read file; do
+          HASH=$(sha256sum "$file" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo 0)
+          CONTENT_TYPE="text/plain"
+          case "$file" in
+            *.html) CONTENT_TYPE="text/html" ;;
+            *.js) CONTENT_TYPE="application/javascript" ;;
+            *.css) CONTENT_TYPE="text/css" ;;
+            *.json) CONTENT_TYPE="application/json" ;;
+          esac
+          echo "{\"path\":\"${file#./}\",\"hash\":\"$HASH\",\"size\":$SIZE,\"contentType\":\"$CONTENT_TYPE\",\"compressed\":false}"
+        done | paste -sd "," -)
+        
+        cat > artifacts/${{ inputs.project_id }}/manifest.json << EOF
         {
           "project_id": "${{ inputs.project_id }}",
           "build_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "git_commit": "${{ github.sha }}",
-          "workflow_run": "${{ github.run_id }}"
+          "workflow_run": "${{ github.run_id }}",
+          "artifacts": [$BUILD_ARTIFACTS]
         }
         EOF
         
@@ -348,13 +353,15 @@ jobs:
       env:
         CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}  # This should be set to BUILDS_BUCKET (e.g., 'gpthost-builds-staging')
       run: |
         echo "Uploading artifacts to Cloudflare R2..."
         
-        # Set build path for callback
-        BUILD_PATH="builds/${{ inputs.project_id }}/$(date -u +%Y%m%d-%H%M%S)"
+        # Set build path for callback - use correct path format expected by deployment manager
+        BUILD_TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
+        BUILD_PATH="projects/${{ inputs.project_id }}/builds/$BUILD_TIMESTAMP"
         echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
+        echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
         
         # Upload all files to R2
         for file in *; do
