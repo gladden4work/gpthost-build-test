@@ -57,8 +57,8 @@ jobs:
       run: |
         echo "Creating source files from workflow input..."
         cat > source_files.json << 'EOFJSON'
-        ${{ inputs.source_files }}
-        EOFJSON
+${{ inputs.source_files }}
+EOFJSON
         
         # Parse JSON and create files
         jq -r 'to_entries[] | [.key, .value] | @tsv' source_files.json | while IFS=$'\t' read -r filename content; do
@@ -92,8 +92,8 @@ jobs:
         if [ ! -f "package.json" ]; then
           echo "Creating package.json from build_config..."
           cat > package.json << 'EOFPKG'
-          ${{ inputs.build_config }}
-          EOFPKG
+${{ inputs.build_config }}
+EOFPKG
         fi
         
         rm source_files.json
