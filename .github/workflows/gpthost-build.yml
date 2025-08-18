@@ -107,7 +107,8 @@ jobs:
       working-directory: projects/${{ inputs.project_id }}
       run: |
         echo "Creating source files from input..."
-        echo '${{ inputs.source_files }}' | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
+        # Use printf with double-quoted expression to preserve quotes and special chars
+        printf '%s' "${{ inputs.source_files }}" | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
           mkdir -p "$(dirname "src/$filename")"
           # Use printf to avoid unintended shell expansion
           printf '%s' "$content" > "src/$filename"
@@ -117,7 +118,7 @@ jobs:
         # FIX 3: Create package.json from build_config input (CRITICAL FIX)
         echo "Creating package.json..."
         # Decode JSON safely using jq to avoid quoting/escaping issues
-        echo '${{ inputs.build_config }}' | jq -r '.' > package.json \
+        printf '%s' "${{ inputs.build_config }}" | jq -r '.' > package.json \
           || { echo 'ERROR: Invalid build_config JSON'; exit 1; }
         
         echo "Source files and package.json created successfully"
