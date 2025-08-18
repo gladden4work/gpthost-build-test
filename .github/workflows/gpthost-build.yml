@@ -232,10 +232,15 @@ jobs:
         if [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_BUCKET_NAME" ]; then
           echo "Missing R2 secrets; skipping upload"; exit 1;
         fi
-        curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
-        unzip -q awscliv2.zip
-        sudo ./aws/install
-        aws --version
+        if command -v aws >/dev/null 2>&1; then
+          echo "Using preinstalled AWS CLI: $(aws --version)"
+        else
+          echo "Installing AWS CLI..."
+          curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+          unzip -q awscliv2.zip
+          sudo ./aws/install --update || sudo ./aws/install
+          aws --version
+        fi
         ENDPOINT="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
         BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
         BUILD_PATH="projects/${{ inputs.project_id }}/builds/$BUILD_TIMESTAMP"
