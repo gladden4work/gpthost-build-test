@@ -116,7 +116,9 @@ jobs:
         
         # FIX 3: Create package.json from build_config input (CRITICAL FIX)
         echo "Creating package.json..."
-        echo '${{ inputs.build_config }}' > package.json
+        # Decode JSON safely using jq to avoid quoting/escaping issues
+        echo '${{ inputs.build_config }}' | jq -r '.' > package.json \
+          || { echo 'ERROR: Invalid build_config JSON'; exit 1; }
         
         echo "Source files and package.json created successfully"
         ls -la src/
