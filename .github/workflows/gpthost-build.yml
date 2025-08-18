@@ -30,6 +30,7 @@ env:
   CALLBACK_URL: ${{ inputs.callback_url }}
   CALLBACK_TOKEN: ${{ inputs.callback_token }}
   CACHE_VERSION: ${{ vars.CACHE_VERSION || '1' }}
+  R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL || '' }}
 
 jobs:
   build:
@@ -217,22 +218,60 @@ jobs:
         echo "Artifacts prepared"
         ls -la artifacts/${{ inputs.project_id }}/
 
+    - name: Upload to Cloudflare R2
+      if: success()
+      working-directory: artifacts/${{ inputs.project_id }}
+      env:
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        R2_PUBLIC_URL: ${{ env.R2_PUBLIC_URL }}
+      run: |
+        echo "Uploading to Cloudflare R2..."
+        if [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_BUCKET_NAME" ]; then
+          echo "Missing R2 secrets; skipping upload"; exit 1;
+        fi
+        curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+        unzip -q awscliv2.zip
+        sudo ./aws/install
+        aws --version
+        ENDPOINT="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
+        BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+        BUILD_PATH="projects/${{ inputs.project_id }}/builds/$BUILD_TIMESTAMP"
+        echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
+        echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
+        echo "R2_ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
+        echo "Uploading files to s3://$R2_BUCKET_NAME/$BUILD_PATH" 
+        find . -type f -print0 | while IFS= read -r -d '' f; do
+          rel=${f#./}
+          aws s3 cp "$f" "s3://$R2_BUCKET_NAME/$BUILD_PATH/$rel" \
+            --endpoint-url "$ENDPOINT" --region auto --no-progress
+        done
+        if [ -n "$R2_PUBLIC_URL" ]; then
+          PUB_BASE="${R2_PUBLIC_URL%/}/$BUILD_PATH"
+          echo "PUBLIC_URL_BASE=$PUB_BASE" >> $GITHUB_ENV
+          echo "Public URL Base: $PUB_BASE"
+        fi
+
     - name: Send success callback
       if: success()
       run: |
         echo "Sending success callback..."
         
+        # Build optional R2 payload
+        R2_JSON=""; if [ -n "${PUBLIC_URL_BASE:-}" ]; then
+          R2_JSON=", \"r2_storage\": { \"build_path\": \"${BUILD_PATH}\", \"bucket_name\": \"${R2_BUCKET_NAME}\", \"endpoint\": \"${R2_ENDPOINT}\", \"build_timestamp\": \"${BUILD_TIMESTAMP}\", \"public_url_base\": \"${PUBLIC_URL_BASE}\" }"
+        elif [ -n "${BUILD_PATH:-}" ]; then
+          R2_JSON=", \"r2_storage\": { \"build_path\": \"${BUILD_PATH}\", \"bucket_name\": \"${R2_BUCKET_NAME}\", \"endpoint\": \"${R2_ENDPOINT}\", \"build_timestamp\": \"${BUILD_TIMESTAMP}\" }"
+        fi
+
+        BODY="{\"status\": \"completed\", \"project_id\": \"${{ inputs.project_id }}\", \"build_timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"workflow_run_id\": \"${{ github.run_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"$R2_JSON }"
+
         curl -X POST "${{ inputs.callback_url }}" \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
-          -d "{
-            \"status\": \"completed\",
-            \"project_id\": \"${{ inputs.project_id }}\",
-            \"build_timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
-            \"workflow_run_id\": \"${{ github.run_id }}\",
-            \"github_run_id\": \"${{ github.run_id }}\",
-            \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-          }" || echo "Callback failed but build succeeded"
+          -d "$BODY" || echo "Callback failed but build succeeded"
         
         echo "Build completed successfully!"
 
