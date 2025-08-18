@@ -107,24 +107,31 @@ jobs:
       working-directory: projects/${{ inputs.project_id }}
       run: |
         echo "Creating source files from input..."
-        # Robust approach: process JSON via here-doc and base64 to avoid shell/YAML quoting issues
+        # Robust approach: write entries to a temp file to avoid process substitution
+        jq -r 'to_entries[] | @base64' <<'JSON' > .entries
+${{ inputs.source_files }}
+JSON
+        
         while IFS= read -r entry; do
           key=$(printf '%s' "$entry" | base64 -d | jq -r '.key')
           content=$(printf '%s' "$entry" | base64 -d | jq -r '.value')
           mkdir -p "$(dirname "src/$key")"
           printf '%s' "$content" > "src/$key"
           echo "Created: src/$key"
-        done < <(jq -r 'to_entries[] | @base64' <<'JSON'
-${{ inputs.source_files }}
-JSON
-)
+        done < .entries
         
         # FIX 3: Create package.json from build_config input (CRITICAL FIX)
         echo "Creating package.json..."
-        # Decode JSON safely using jq and here-doc to avoid quoting/escaping issues
-        jq -r '.' <<'JSON' > package.json || { echo 'ERROR: Invalid build_config JSON'; exit 1; }
+        # Write build_config to package.json using here-doc, then validate with jq
+        cat > package.json <<'JSON'
 ${{ inputs.build_config }}
 JSON
+        
+        # Validate JSON
+        if ! jq . package.json > /dev/null 2>&1; then
+          echo 'ERROR: Invalid build_config JSON'
+          exit 1
+        fi
         
         echo "Source files and package.json created successfully"
         ls -la src/
