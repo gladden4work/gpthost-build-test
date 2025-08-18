@@ -107,6 +107,7 @@ jobs:
       working-directory: projects/${{ inputs.project_id }}
       env:
         SOURCE_FILES: ${{ inputs.source_files }}
+        BUILD_CONFIG: ${{ inputs.build_config }}
       run: |
         echo "Creating source files from input..."
         # Robust approach: write entries to a temp file to avoid process substitution or YAML expression issues
