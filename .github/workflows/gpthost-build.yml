@@ -206,15 +206,13 @@ jobs:
           cp -r projects/${{ inputs.project_id }}/dist/* artifacts/${{ inputs.project_id }}/ 2>/dev/null || true
         fi
         
-        # Create build manifest
-        cat > artifacts/${{ inputs.project_id }}/build-manifest.json << MANIFEST
-        {
-          "project_id": "${{ inputs.project_id }}",
-          "build_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-          "workflow_run": "${{ github.run_id }}",
-          "status": "completed"
-        }
-MANIFEST
+        # Create build manifest (use jq to avoid YAML heredoc issues)
+        jq -n \
+          --arg pid "${{ inputs.project_id }}" \
+          --arg ts  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --arg run "${{ github.run_id }}" \
+          '{project_id:$pid, build_timestamp:$ts, workflow_run:$run, status:"completed"}' \
+          > artifacts/${{ inputs.project_id }}/build-manifest.json
         
         echo "Artifacts prepared"
         ls -la artifacts/${{ inputs.project_id }}/
