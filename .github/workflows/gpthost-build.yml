@@ -107,19 +107,24 @@ jobs:
       working-directory: projects/${{ inputs.project_id }}
       run: |
         echo "Creating source files from input..."
-        # Use printf with double-quoted expression to preserve quotes and special chars
-        printf '%s' "${{ inputs.source_files }}" | jq -r 'to_entries[] | [.key, .value] | @tsv' | while IFS=$'\t' read -r filename content; do
-          mkdir -p "$(dirname "src/$filename")"
-          # Use printf to avoid unintended shell expansion
-          printf '%s' "$content" > "src/$filename"
-          echo "Created: src/$filename"
-        done
+        # Robust approach: process JSON via here-doc and base64 to avoid shell/YAML quoting issues
+        while IFS= read -r entry; do
+          key=$(printf '%s' "$entry" | base64 -d | jq -r '.key')
+          content=$(printf '%s' "$entry" | base64 -d | jq -r '.value')
+          mkdir -p "$(dirname "src/$key")"
+          printf '%s' "$content" > "src/$key"
+          echo "Created: src/$key"
+        done < <(jq -r 'to_entries[] | @base64' <<'JSON'
+${{ inputs.source_files }}
+JSON
+)
         
         # FIX 3: Create package.json from build_config input (CRITICAL FIX)
         echo "Creating package.json..."
-        # Decode JSON safely using jq to avoid quoting/escaping issues
-        printf '%s' "${{ inputs.build_config }}" | jq -r '.' > package.json \
-          || { echo 'ERROR: Invalid build_config JSON'; exit 1; }
+        # Decode JSON safely using jq and here-doc to avoid quoting/escaping issues
+        jq -r '.' <<'JSON' > package.json || { echo 'ERROR: Invalid build_config JSON'; exit 1; }
+${{ inputs.build_config }}
+JSON
         
         echo "Source files and package.json created successfully"
         ls -la src/
