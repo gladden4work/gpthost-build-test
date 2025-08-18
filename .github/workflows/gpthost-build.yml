@@ -54,11 +54,13 @@ jobs:
 
     - name: Create source files from workflow input
       working-directory: projects/${{ inputs.project_id }}
+      env:
+        SOURCE_FILES: ${{ inputs.source_files }}
+        BUILD_CONFIG: ${{ inputs.build_config }}
       run: |
         echo "Creating source files from workflow input..."
-        cat > source_files.json << 'EOFJSON'
-${{ inputs.source_files }}
-EOFJSON
+        # Use environment variable to avoid YAML parsing issues
+        echo "$SOURCE_FILES" > source_files.json
         
         # Parse JSON and create files
         jq -r 'to_entries[] | [.key, .value] | @tsv' source_files.json | while IFS=$'\t' read -r filename content; do
@@ -91,9 +93,8 @@ EOFJSON
         # Create package.json from build_config if not already created
         if [ ! -f "package.json" ]; then
           echo "Creating package.json from build_config..."
-          cat > package.json << 'EOFPKG'
-${{ inputs.build_config }}
-EOFPKG
+          # Use environment variable passed from step
+          echo "$BUILD_CONFIG" > package.json
         fi
         
         rm source_files.json
