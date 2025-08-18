@@ -105,12 +105,12 @@ jobs:
     # FIX 1: Add missing source file creation step (CRITICAL FIX)
     - name: Create source files
       working-directory: projects/${{ inputs.project_id }}
+      env:
+        SOURCE_FILES: ${{ inputs.source_files }}
       run: |
         echo "Creating source files from input..."
-        # Robust approach: write entries to a temp file to avoid process substitution
-        jq -r 'to_entries[] | @base64' <<'JSON' > .entries
-${{ inputs.source_files }}
-JSON
+        # Robust approach: write entries to a temp file to avoid process substitution or YAML expression issues
+        printf '%s' "$SOURCE_FILES" | jq -r 'to_entries[] | @base64' > .entries
         
         while IFS= read -r entry; do
           key=$(printf '%s' "$entry" | base64 -d | jq -r '.key')
@@ -122,10 +122,8 @@ JSON
         
         # FIX 3: Create package.json from build_config input (CRITICAL FIX)
         echo "Creating package.json..."
-        # Write build_config to package.json using here-doc, then validate with jq
-        cat > package.json <<'JSON'
-${{ inputs.build_config }}
-JSON
+        # Write build_config to package.json using env var to avoid YAML expression issues
+        printf '%s' "$BUILD_CONFIG" > package.json
         
         # Validate JSON
         if ! jq . package.json > /dev/null 2>&1; then
@@ -218,6 +216,8 @@ JSON
 
     - name: Create build configuration
       working-directory: projects/${{ inputs.project_id }}
+      env:
+        BUILD_CONFIG: ${{ inputs.build_config }}
       run: |
         echo "Setting up build environment..."
         
