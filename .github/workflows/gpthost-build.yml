@@ -433,7 +433,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
           -d "{
-            \"status\": \"success\",
+            \"status\": \"completed\",
             \"project_id\": \"${{ inputs.project_id }}\",
             \"r2_build_path\": \"$BUILD_PATH\",
             \"build_timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
