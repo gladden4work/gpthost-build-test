@@ -226,10 +226,12 @@ jobs:
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
           -d "{
-            \"status\": \"success\",
+            \"status\": \"completed\",
             \"project_id\": \"${{ inputs.project_id }}\",
             \"build_timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
-            \"workflow_run_id\": \"${{ github.run_id }}\"
+            \"workflow_run_id\": \"${{ github.run_id }}\",
+            \"github_run_id\": \"${{ github.run_id }}\",
+            \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
           }" || echo "Callback failed but build succeeded"
         
         echo "Build completed successfully!"
@@ -246,5 +248,7 @@ jobs:
             \"status\": \"failed\",
             \"project_id\": \"${{ inputs.project_id }}\",
             \"error_message\": \"Build failed - check workflow logs\",
-            \"workflow_run_id\": \"${{ github.run_id }}\"
+            \"workflow_run_id\": \"${{ github.run_id }}\",
+            \"github_run_id\": \"${{ github.run_id }}\",
+            \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
           }" || echo "Callback failed"
