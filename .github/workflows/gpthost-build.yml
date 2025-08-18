@@ -242,6 +242,10 @@ jobs:
           aws --version
         fi
         ENDPOINT="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
+        # Provide AWS CLI with credentials via env vars
+        export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+        export AWS_DEFAULT_REGION="auto"
         BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
         BUILD_PATH="projects/${{ inputs.project_id }}/builds/$BUILD_TIMESTAMP"
         echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
