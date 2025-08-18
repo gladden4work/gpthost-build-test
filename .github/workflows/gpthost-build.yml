@@ -136,38 +136,36 @@ jobs:
       run: |
         echo "Setting up build environment..."
         
-        # Create basic index.html if missing
+        # Create basic index.html if missing (avoid heredoc to prevent YAML parsing issues)
         if [ ! -f "public/index.html" ] && [ ! -f "index.html" ]; then
           mkdir -p public
-          cat > public/index.html << 'HTML'
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>GPTHost Build</title>
-        </head>
-        <body>
-          <div id="root"></div>
-        </body>
-        </html>
-HTML
+          printf '%s\n' \
+            '<!DOCTYPE html>' \
+            '<html lang="en">' \
+            '<head>' \
+            '  <meta charset="UTF-8">' \
+            '  <meta name="viewport" content="width=device-width, initial-scale=1.0">' \
+            '  <title>GPTHost Build</title>' \
+            '</head>' \
+            '<body>' \
+            '  <div id="root"></div>' \
+            '</body>' \
+            '</html>' > public/index.html
         fi
         
-        # Create vite config if missing
+        # Create vite config if missing (avoid heredoc)
         if [ ! -f "vite.config.js" ] && [ ! -f "vite.config.ts" ]; then
-          cat > vite.config.js << 'VITE'
-        import { defineConfig } from 'vite'
-        import react from '@vitejs/plugin-react'
-
-        export default defineConfig({
-          plugins: [react()],
-          build: {
-            outDir: 'dist',
-            emptyOutDir: true
-          }
-        })
-VITE
+          printf '%s\n' \
+            "import { defineConfig } from 'vite'" \
+            "import react from '@vitejs/plugin-react'" \
+            "" \
+            "export default defineConfig({" \
+            "  plugins: [react()]," \
+            "  build: {" \
+            "    outDir: 'dist'," \
+            "    emptyOutDir: true" \
+            "  }" \
+            "})" > vite.config.js
         fi
         
         echo "Build configuration ready"
