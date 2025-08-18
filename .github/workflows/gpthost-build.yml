@@ -206,19 +206,38 @@ jobs:
       run: |
         echo "Setting up build environment..."
         
-        # Create basic index.html if it doesn't exist
+        # Ensure root index.html exists for Vite (required entry point)
+        if [ ! -f "index.html" ]; then
+          cat > index.html << 'EOF'
+        <!DOCTYPE html>
+        <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>GPTHost Component</title>
+          </head>
+          <body>
+            <div id="root"></div>
+            <script type="module" src="/src/main.jsx"></script>
+          </body>
+        </html>
+        EOF
+        fi
+        
+        # Also provide public/index.html for frameworks expecting a public folder
         if [ ! -f "public/index.html" ]; then
+          mkdir -p public
           cat > public/index.html << 'EOF'
         <!DOCTYPE html>
         <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>GPTHost Component</title>
-        </head>
-        <body>
-          <div id="root"></div>
-        </body>
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>GPTHost Component</title>
+          </head>
+          <body>
+            <div id="root"></div>
+          </body>
         </html>
         EOF
         fi
