@@ -56,7 +56,9 @@ jobs:
       working-directory: projects/${{ inputs.project_id }}
       run: |
         echo "Creating source files from workflow input..."
-        echo '${{ inputs.source_files }}' > source_files.json
+        cat > source_files.json << 'EOFJSON'
+        ${{ inputs.source_files }}
+        EOFJSON
         
         # Parse JSON and create files
         jq -r 'to_entries[] | [.key, .value] | @tsv' source_files.json | while IFS=$'\t' read -r filename content; do
@@ -89,7 +91,9 @@ jobs:
         # Create package.json from build_config if not already created
         if [ ! -f "package.json" ]; then
           echo "Creating package.json from build_config..."
-          echo '${{ inputs.build_config }}' > package.json
+          cat > package.json << 'EOFPKG'
+          ${{ inputs.build_config }}
+          EOFPKG
         fi
         
         rm source_files.json
