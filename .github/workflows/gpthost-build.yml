@@ -282,10 +282,18 @@ jobs:
 
         BODY="{\"status\": \"completed\", \"project_id\": \"${{ inputs.project_id }}\", \"build_timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"workflow_run_id\": \"${{ github.run_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"$R2_JSON }"
 
-        curl -X POST "${{ inputs.callback_url }}" \
+        HTTP_CODE=$(curl -s -o /tmp/callback_success.json -w "%{http_code}" -X POST "${{ inputs.callback_url }}" \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
-          -d "$BODY" || echo "Callback failed but build succeeded"
+          -d "$BODY")
+
+        echo "Callback HTTP_CODE: $HTTP_CODE"
+        echo "Callback response (truncated):"
+        tail -c 2000 /tmp/callback_success.json || true
+
+        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+          echo "Warning: Callback returned non-2xx status"
+        fi
         
         echo "Build completed successfully!"
 
@@ -294,14 +302,17 @@ jobs:
       run: |
         echo "Sending failure callback..."
         
-        curl -X POST "${{ inputs.callback_url }}" \
+        FAIL_BODY="{\"status\": \"failed\", \"project_id\": \"${{ inputs.project_id }}\", \"error_message\": \"Build failed - check workflow logs\", \"workflow_run_id\": \"${{ github.run_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\" }"
+
+        HTTP_CODE=$(curl -s -o /tmp/callback_failure.json -w "%{http_code}" -X POST "${{ inputs.callback_url }}" \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
-          -d "{
-            \"status\": \"failed\",
-            \"project_id\": \"${{ inputs.project_id }}\",
-            \"error_message\": \"Build failed - check workflow logs\",
-            \"workflow_run_id\": \"${{ github.run_id }}\",
-            \"github_run_id\": \"${{ github.run_id }}\",
-            \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-          }" || echo "Callback failed"
+          -d "$FAIL_BODY")
+
+        echo "Callback HTTP_CODE: $HTTP_CODE"
+        echo "Callback response (truncated):"
+        tail -c 2000 /tmp/callback_failure.json || true
+
+        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+          echo "Warning: Callback returned non-2xx status"
+        fi
