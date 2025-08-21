@@ -61,9 +61,18 @@ jobs:
         echo "Creating source files from workflow input..."
         echo "$SOURCE_FILES" > source_files.json
         
-        # Parse JSON and create files with proper newline handling
-        # CRITICAL FIX: Use jq -r to properly decode JSON escape sequences including \n
-        jq -r 'to_entries[] | "\(.key)\t\(.value)"' source_files.json | while IFS=$'\t' read -r filename content; do
+        # CRITICAL FIX: Use base64 encoding to handle all special characters reliably
+        # This approach avoids all separator and newline issues
+        echo "Processing source files with base64 encoding for reliability..."
+        
+        # Process each file using jq to extract key-value pairs
+        # Use base64 encoding for content to handle newlines and special characters
+        for filename in $(jq -r 'keys[]' source_files.json); do
+          echo "Processing file: $filename"
+          
+          # Get the content and encode it in base64 to handle all special characters
+          content=$(jq -r --arg key "$filename" '.[$key]' source_files.json | base64 -w 0)
+          
           # Normalize filename
           filename=${filename#./}
           filename=${filename#/}
@@ -80,28 +89,45 @@ jobs:
           elif [[ "$filename" == src/* ]]; then
             target="$filename"
           elif [[ "$filename" == "index.html" ]]; then
-            # CRITICAL FIX: Place index.html in project root for Vite
+            # Place index.html in project root for Vite
             target="index.html"
           else
             target="src/$filename"
           fi
 
+          # Create directory if needed
           mkdir -p "$(dirname "$target")"
-          # Use printf to write content exactly as is (jq already decoded the escape sequences)
-          printf '%s' "$content" > "$target"
-          echo "Created: $target ($(wc -l < "$target") lines)"
+          
+          # Decode base64 and write to file
+          echo "$content" | base64 -d > "$target"
+          
+          # Verify file was created and show line count
+          if [ -f "$target" ]; then
+            line_count=$(wc -l < "$target")
+            echo "✓ Created: $target ($line_count lines)"
+          else
+            echo "✗ Failed to create: $target"
+            exit 1
+          fi
         done
         
         # Create package.json from build_config if not already created
         if [ ! -f "package.json" ]; then
           echo "Creating package.json from build_config..."
           echo "$BUILD_CONFIG" > package.json
+          echo "✓ Created: package.json"
         fi
         
+        # Clean up temporary file
         rm source_files.json
+        
+        echo "==============================================="
         echo "Source files created successfully"
+        echo "==============================================="
+        echo "Project structure:"
         ls -la
         if [ -d "src" ]; then
+          echo ""
           echo "Source directory contents:"
           ls -la src/
         fi
