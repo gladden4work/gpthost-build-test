@@ -195,21 +195,77 @@ jobs:
           fi
         fi
         
-        if [ ! -d "dist" ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
-          echo "WARNING: No build output found"
-          mkdir -p dist
-          echo '{"status":"no-build-output"}' > dist/build-status.json
+        # CRITICAL: Verify dist folder exists and has content
+        echo "==============================================="
+        echo "VERIFYING BUILD OUTPUT:"
+        echo "==============================================="
+        
+        if [ -d "dist" ]; then
+          echo "✓ dist folder exists"
+          echo "Contents of dist folder:"
+          ls -la dist/
+          
+          # Check for index.html
+          if [ -f "dist/index.html" ]; then
+            echo "✓ dist/index.html found"
+            echo "First 10 lines of dist/index.html:"
+            head -10 dist/index.html
+          else
+            echo "✗ WARNING: dist/index.html not found!"
+          fi
+          
+          # Check for assets
+          if [ -d "dist/assets" ]; then
+            echo "✓ dist/assets folder found"
+            echo "Assets:"
+            ls -la dist/assets/
+          else
+            echo "ℹ No dist/assets folder (might be normal for some builds)"
+          fi
+        else
+          echo "✗ ERROR: dist folder does not exist!"
+          echo "Build may have failed. Current directory contents:"
+          ls -la
+          exit 1
         fi
         
-        echo "Build process completed"
-        ls -la dist/ 2>/dev/null || echo "No dist directory"
+        echo "==============================================="
+        echo "Build verification completed"
 
     - name: Prepare artifacts
       run: |
-        echo "Preparing artifacts..."
+        echo "==============================================="
+        echo "PREPARING ARTIFACTS FOR UPLOAD:"
+        echo "==============================================="
         
-        if [ -d "projects/${{ inputs.project_id }}/dist" ]; then
-          cp -r projects/${{ inputs.project_id }}/dist/* artifacts/${{ inputs.project_id }}/ 2>/dev/null || true
+        # Check if dist folder exists
+        if [ ! -d "projects/${{ inputs.project_id }}/dist" ]; then
+          echo "✗ ERROR: dist folder not found at projects/${{ inputs.project_id }}/dist"
+          echo "Current directory structure:"
+          ls -la projects/${{ inputs.project_id }}/
+          exit 1
+        fi
+        
+        echo "✓ Found dist folder at projects/${{ inputs.project_id }}/dist"
+        echo "Contents to be copied:"
+        ls -la projects/${{ inputs.project_id }}/dist/
+        
+        # Copy dist contents to artifacts (without error suppression)
+        echo "Copying dist contents to artifacts..."
+        cp -rv projects/${{ inputs.project_id }}/dist/* artifacts/${{ inputs.project_id }}/
+        
+        # Verify the copy was successful
+        echo "==============================================="
+        echo "VERIFYING ARTIFACTS:"
+        echo "==============================================="
+        
+        if [ -f "artifacts/${{ inputs.project_id }}/index.html" ]; then
+          echo "✓ index.html copied successfully"
+        else
+          echo "✗ ERROR: index.html not found in artifacts!"
+          echo "Artifacts directory contents:"
+          ls -la artifacts/${{ inputs.project_id }}/
+          exit 1
         fi
         
         # Create build manifest (use jq to avoid YAML heredoc issues)
@@ -220,8 +276,15 @@ jobs:
           '{project_id:$pid, build_timestamp:$ts, workflow_run:$run, status:"completed"}' \
           > artifacts/${{ inputs.project_id }}/build-manifest.json
         
-        echo "Artifacts prepared"
-        ls -la artifacts/${{ inputs.project_id }}/
+        echo "==============================================="
+        echo "FINAL ARTIFACTS TO BE UPLOADED:"
+        echo "==============================================="
+        echo "Files in artifacts/${{ inputs.project_id }}:"
+        find artifacts/${{ inputs.project_id }} -type f | head -20
+        echo ""
+        echo "Total size of artifacts:"
+        du -sh artifacts/${{ inputs.project_id }}/
+        echo "==============================================="
 
     - name: Upload to Cloudflare R2
       if: success()
@@ -233,10 +296,28 @@ jobs:
         R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         R2_PUBLIC_URL: ${{ env.R2_PUBLIC_URL }}
       run: |
-        echo "Uploading to Cloudflare R2..."
+        echo "==============================================="
+        echo "UPLOADING TO CLOUDFLARE R2:"
+        echo "==============================================="
+        
         if [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_BUCKET_NAME" ]; then
           echo "Missing R2 secrets; skipping upload"; exit 1;
         fi
+        
+        # Verify we're uploading the right files
+        echo "Current working directory: $(pwd)"
+        echo "Files to be uploaded:"
+        ls -la
+        
+        # Double-check we have index.html
+        if [ ! -f "index.html" ]; then
+          echo "✗ CRITICAL ERROR: index.html not found in upload directory!"
+          echo "This means dist files were not copied correctly."
+          exit 1
+        fi
+        
+        echo "✓ index.html found, proceeding with upload..."
+        
         if command -v aws >/dev/null 2>&1; then
           echo "Using preinstalled AWS CLI: $(aws --version)"
         else
@@ -246,26 +327,39 @@ jobs:
           sudo ./aws/install --update || sudo ./aws/install
           aws --version
         fi
+        
         ENDPOINT="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
         # Provide AWS CLI with credentials via env vars
         export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
         export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
         export AWS_DEFAULT_REGION="auto"
+        
         BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
         BUILD_PATH="projects/${{ inputs.project_id }}/builds/$BUILD_TIMESTAMP"
         echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
         echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
         echo "R2_ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
+        
         echo "Uploading files to s3://$R2_BUCKET_NAME/$BUILD_PATH" 
+        
+        # Upload files and log what's being uploaded
         find . -type f -print0 | while IFS= read -r -d '' f; do
           rel=${f#./}
+          echo "Uploading: $rel"
           aws s3 cp "$f" "s3://$R2_BUCKET_NAME/$BUILD_PATH/$rel" \
             --endpoint-url "$ENDPOINT" --region auto --no-progress
         done
+        
         if [ -n "$R2_PUBLIC_URL" ]; then
           PUB_BASE="${R2_PUBLIC_URL%/}/$BUILD_PATH"
           echo "PUBLIC_URL_BASE=$PUB_BASE" >> $GITHUB_ENV
           echo "Public URL Base: $PUB_BASE"
+          echo "==============================================="
+          echo "DEPLOYMENT URLS:"
+          echo "==============================================="
+          echo "Main URL: $PUB_BASE/index.html"
+          echo "Root URL: $PUB_BASE/"
+          echo "==============================================="
         fi
 
     - name: Send success callback
