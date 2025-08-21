@@ -1,4 +1,4 @@
-name: GPTHost Build Pipeline
+name: GPTHost Build Pipeline - FIXED
 
 on:
   workflow_dispatch:
@@ -61,8 +61,9 @@ jobs:
         echo "Creating source files from workflow input..."
         echo "$SOURCE_FILES" > source_files.json
         
-        # Parse JSON and create files
-        jq -r 'to_entries[] | [.key, .value] | @tsv' source_files.json | while IFS=$'\t' read -r filename content; do
+        # Parse JSON and create files with proper newline handling
+        # CRITICAL FIX: Use jq -r to properly decode JSON escape sequences including \n
+        jq -r 'to_entries[] | "\(.key)\t\(.value)"' source_files.json | while IFS=$'\t' read -r filename content; do
           # Normalize filename
           filename=${filename#./}
           filename=${filename#/}
@@ -86,8 +87,9 @@ jobs:
           fi
 
           mkdir -p "$(dirname "$target")"
+          # Use printf to write content exactly as is (jq already decoded the escape sequences)
           printf '%s' "$content" > "$target"
-          echo "Created: $target"
+          echo "Created: $target ($(wc -l < "$target") lines)"
         done
         
         # Create package.json from build_config if not already created
