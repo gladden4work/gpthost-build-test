@@ -59,7 +59,6 @@ jobs:
         BUILD_CONFIG: ${{ inputs.build_config }}
       run: |
         echo "Creating source files from workflow input..."
-        # Use environment variable to avoid YAML parsing issues
         echo "$SOURCE_FILES" > source_files.json
         
         # Parse JSON and create files
@@ -80,7 +79,8 @@ jobs:
           elif [[ "$filename" == src/* ]]; then
             target="$filename"
           elif [[ "$filename" == "index.html" ]]; then
-            target="public/index.html"
+            # CRITICAL FIX: Place index.html in project root for Vite
+            target="index.html"
           else
             target="src/$filename"
           fi
@@ -93,7 +93,6 @@ jobs:
         # Create package.json from build_config if not already created
         if [ ! -f "package.json" ]; then
           echo "Creating package.json from build_config..."
-          # Use environment variable passed from step
           echo "$BUILD_CONFIG" > package.json
         fi
         
@@ -104,31 +103,6 @@ jobs:
           echo "Source directory contents:"
           ls -la src/
         fi
-
-    - name: Validate project structure
-      working-directory: projects/${{ inputs.project_id }}
-      run: |
-        echo "Validating project structure..."
-        
-        if [ ! -f "package.json" ]; then
-          echo "ERROR: package.json not found"
-          exit 1
-        fi
-        
-        if ! jq . package.json > /dev/null 2>&1; then
-          echo "ERROR: Invalid JSON in package.json"
-          cat package.json
-          exit 1
-        fi
-        
-        if [ ! -d "src" ] || [ -z "$(ls -A src)" ]; then
-          echo "WARNING: No source files found in src directory"
-          echo "This might be expected for some project types"
-        fi
-        
-        echo "Project structure validation passed"
-        echo "Package.json contents:"
-        cat package.json | head -20
 
     - name: Install dependencies
       working-directory: projects/${{ inputs.project_id }}
@@ -142,24 +116,38 @@ jobs:
       run: |
         echo "Setting up build environment..."
         
-        # Create basic index.html if missing (avoid heredoc to prevent YAML parsing issues)
-        if [ ! -f "public/index.html" ] && [ ! -f "index.html" ]; then
-          mkdir -p public
-          printf '%s\n' \
-            '<!DOCTYPE html>' \
-            '<html lang="en">' \
-            '<head>' \
-            '  <meta charset="UTF-8">' \
-            '  <meta name="viewport" content="width=device-width, initial-scale=1.0">' \
-            '  <title>GPTHost Build</title>' \
-            '</head>' \
-            '<body>' \
-            '  <div id="root"></div>' \
-            '</body>' \
-            '</html>' > public/index.html
+        # CRITICAL FIX: Ensure index.html exists in project root for Vite
+        if [ ! -f "index.html" ]; then
+          if [ -f "public/index.html" ]; then
+            echo "Moving index.html from public/ to project root for Vite..."
+            mv public/index.html index.html
+          else
+            echo "Creating default index.html in project root..."
+            printf '%s\n' \
+              '<!DOCTYPE html>' \
+              '<html lang="en">' \
+              '<head>' \
+              '  <meta charset="UTF-8">' \
+              '  <meta name="viewport" content="width=device-width, initial-scale=1.0">' \
+              '  <title>GPTHost Build</title>' \
+              '</head>' \
+              '<body>' \
+              '  <div id="root"></div>' \
+              '  <script type="module" src="/src/main.jsx"></script>' \
+              '</body>' \
+              '</html>' > index.html
+          fi
         fi
         
-        # Create vite config if missing (avoid heredoc)
+        # Update index.html to reference the correct entry point
+        if [ -f "index.html" ] && [ -f "src/main.jsx" ]; then
+          if ! grep -q 'src/main.jsx' index.html; then
+            echo "Updating index.html to reference src/main.jsx..."
+            sed -i 's|</body>|  <script type="module" src="/src/main.jsx"></script>\n</body>|' index.html
+          fi
+        fi
+        
+        # Create vite config if missing
         if [ ! -f "vite.config.js" ] && [ ! -f "vite.config.ts" ]; then
           printf '%s\n' \
             "import { defineConfig } from 'vite'" \
@@ -175,62 +163,61 @@ jobs:
         fi
         
         echo "Build configuration ready"
+        echo "Project structure:"
+        ls -la
 
     - name: Build project
       working-directory: projects/${{ inputs.project_id }}
       run: |
         echo "Building project..."
         
-        # Check if build script exists
-        if npm run build --if-present; then
-          echo "Build completed successfully"
-        else
-          echo "No build script found, checking for dist folder..."
-          # For projects without build step, just verify files exist
-          if [ -d "src" ]; then
-            mkdir -p dist
-            cp -r src/* dist/ 2>/dev/null || true
-            cp public/index.html dist/ 2>/dev/null || true
-            echo "Files copied to dist"
-          fi
+        # Run build and capture exit code
+        BUILD_EXIT_CODE=0
+        npm run build || BUILD_EXIT_CODE=$?
+        
+        if [ $BUILD_EXIT_CODE -ne 0 ]; then
+          echo "==============================================="
+          echo "BUILD FAILED with exit code: $BUILD_EXIT_CODE"
+          echo "==============================================="
+          echo "Build output above shows the error details."
+          echo "This is a critical failure - no files will be uploaded."
+          exit 1
         fi
+        
+        echo "Build completed successfully"
         
         # CRITICAL: Verify dist folder exists and has content
         echo "==============================================="
         echo "VERIFYING BUILD OUTPUT:"
         echo "==============================================="
         
-        if [ -d "dist" ]; then
-          echo "✓ dist folder exists"
-          echo "Contents of dist folder:"
-          ls -la dist/
-          
-          # Check for index.html
-          if [ -f "dist/index.html" ]; then
-            echo "✓ dist/index.html found"
-            echo "First 10 lines of dist/index.html:"
-            head -10 dist/index.html
-          else
-            echo "✗ WARNING: dist/index.html not found!"
-          fi
-          
-          # Check for assets
-          if [ -d "dist/assets" ]; then
-            echo "✓ dist/assets folder found"
-            echo "Assets:"
-            ls -la dist/assets/
-          else
-            echo "ℹ No dist/assets folder (might be normal for some builds)"
-          fi
-        else
-          echo "✗ ERROR: dist folder does not exist!"
-          echo "Build may have failed. Current directory contents:"
-          ls -la
+        if [ ! -d "dist" ]; then
+          echo "✗ CRITICAL ERROR: dist folder does not exist after build!"
+          echo "Build command succeeded but produced no output."
           exit 1
         fi
         
+        echo "✓ dist folder exists"
+        echo "Contents of dist folder:"
+        ls -la dist/
+        
+        # Check for index.html
+        if [ ! -f "dist/index.html" ]; then
+          echo "✗ CRITICAL ERROR: dist/index.html not found!"
+          echo "Build output is incomplete."
+          exit 1
+        fi
+        
+        echo "✓ dist/index.html found"
+        
+        # Check for JS assets
+        if ! find dist -name "*.js" -type f | grep -q .; then
+          echo "⚠ WARNING: No JavaScript files found in dist/"
+          echo "This might indicate a build problem."
+        fi
+        
         echo "==============================================="
-        echo "Build verification completed"
+        echo "Build verification completed successfully"
 
     - name: Prepare artifacts
       run: |
@@ -238,37 +225,35 @@ jobs:
         echo "PREPARING ARTIFACTS FOR UPLOAD:"
         echo "==============================================="
         
-        # Check if dist folder exists
+        # CRITICAL: Only copy dist contents, nothing else
         if [ ! -d "projects/${{ inputs.project_id }}/dist" ]; then
-          echo "✗ ERROR: dist folder not found at projects/${{ inputs.project_id }}/dist"
-          echo "Current directory structure:"
-          ls -la projects/${{ inputs.project_id }}/
+          echo "✗ ERROR: dist folder not found"
           exit 1
         fi
         
-        echo "✓ Found dist folder at projects/${{ inputs.project_id }}/dist"
-        echo "Contents to be copied:"
-        ls -la projects/${{ inputs.project_id }}/dist/
+        echo "✓ Found dist folder"
+        echo "Copying ONLY dist contents to artifacts..."
         
-        # Copy dist contents to artifacts (without error suppression)
-        echo "Copying dist contents to artifacts..."
-        cp -rv projects/${{ inputs.project_id }}/dist/* artifacts/${{ inputs.project_id }}/
+        # Clear artifacts directory first to ensure no source files
+        rm -rf artifacts/${{ inputs.project_id }}/*
+        mkdir -p artifacts/${{ inputs.project_id }}
         
-        # Verify the copy was successful
-        echo "==============================================="
-        echo "VERIFYING ARTIFACTS:"
-        echo "==============================================="
+        # Copy only dist contents
+        cp -r projects/${{ inputs.project_id }}/dist/* artifacts/${{ inputs.project_id }}/
         
-        if [ -f "artifacts/${{ inputs.project_id }}/index.html" ]; then
-          echo "✓ index.html copied successfully"
-        else
-          echo "✗ ERROR: index.html not found in artifacts!"
-          echo "Artifacts directory contents:"
+        # Verify no source files were copied
+        if [ -f "artifacts/${{ inputs.project_id }}/App.jsx" ] || \
+           [ -f "artifacts/${{ inputs.project_id }}/main.jsx" ] || \
+           [ -f "artifacts/${{ inputs.project_id }}/package.json" ]; then
+          echo "✗ ERROR: Source files found in artifacts!"
+          echo "This indicates the build didn't properly compile the files."
           ls -la artifacts/${{ inputs.project_id }}/
           exit 1
         fi
         
-        # Create build manifest (use jq to avoid YAML heredoc issues)
+        echo "✓ Verified no source files in artifacts"
+        
+        # Create build manifest
         jq -n \
           --arg pid "${{ inputs.project_id }}" \
           --arg ts  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -301,113 +286,79 @@ jobs:
         echo "==============================================="
         
         if [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_BUCKET_NAME" ]; then
-          echo "Missing R2 secrets; skipping upload"; exit 1;
+          echo "✗ ERROR: Missing R2 credentials"
+          echo "Please configure GitHub Secrets for R2 access"
+          exit 1
         fi
         
-        # Verify we're uploading the right files
-        echo "Current working directory: $(pwd)"
-        echo "Files to be uploaded:"
-        ls -la
-        
-        # Double-check we have index.html
+        # Final verification before upload
         if [ ! -f "index.html" ]; then
           echo "✗ CRITICAL ERROR: index.html not found in upload directory!"
-          echo "This means dist files were not copied correctly."
+          echo "Current directory contents:"
+          ls -la
           exit 1
         fi
         
         echo "✓ index.html found, proceeding with upload..."
         
-        if command -v aws >/dev/null 2>&1; then
-          echo "Using preinstalled AWS CLI: $(aws --version)"
-        else
+        # Setup AWS CLI
+        if ! command -v aws >/dev/null 2>&1; then
           echo "Installing AWS CLI..."
           curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
           unzip -q awscliv2.zip
-          sudo ./aws/install --update || sudo ./aws/install
-          aws --version
+          sudo ./aws/install
         fi
         
         ENDPOINT="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
-        # Provide AWS CLI with credentials via env vars
         export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
         export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
         export AWS_DEFAULT_REGION="auto"
         
         BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
-        # Canonical R2 build artifacts path used by Workers: builds/{projectId}/{timestamp}
         BUILD_PATH="builds/${{ inputs.project_id }}/$BUILD_TIMESTAMP"
+        
+        echo "Uploading to: s3://$R2_BUCKET_NAME/$BUILD_PATH/"
+        
+        # Upload all files with proper paths
+        aws s3 sync . "s3://$R2_BUCKET_NAME/$BUILD_PATH/dist/" \
+          --endpoint-url "$ENDPOINT" \
+          --region auto \
+          --no-progress
+        
+        echo "✓ Upload completed successfully"
+        echo "Files available at: $BUILD_PATH/dist/"
+        
+        # Store paths for callback
         echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
         echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
-        echo "R2_ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
-        
-        echo "Uploading files to s3://$R2_BUCKET_NAME/$BUILD_PATH" 
-        
-        # Upload files and log what's being uploaded
-        find . -type f -print0 | while IFS= read -r -d '' f; do
-          rel=${f#./}
-          echo "Uploading: $rel"
-          aws s3 cp "$f" "s3://$R2_BUCKET_NAME/$BUILD_PATH/$rel" \
-            --endpoint-url "$ENDPOINT" --region auto --no-progress
-        done
-        
-        if [ -n "$R2_PUBLIC_URL" ]; then
-          PUB_BASE="${R2_PUBLIC_URL%/}/$BUILD_PATH"
-          echo "PUBLIC_URL_BASE=$PUB_BASE" >> $GITHUB_ENV
-          echo "Public URL Base: $PUB_BASE"
-          echo "==============================================="
-          echo "DEPLOYMENT URLS:"
-          echo "==============================================="
-          echo "Main URL: $PUB_BASE/index.html"
-          echo "Root URL: $PUB_BASE/"
-          echo "==============================================="
-        fi
 
     - name: Send success callback
       if: success()
       run: |
         echo "Sending success callback..."
         
-        # Build optional R2 payload
-        R2_JSON=""; if [ -n "${PUBLIC_URL_BASE:-}" ]; then
-          R2_JSON=", \"r2_storage\": { \"build_path\": \"${BUILD_PATH}\", \"bucket_name\": \"${R2_BUCKET_NAME}\", \"endpoint\": \"${R2_ENDPOINT}\", \"build_timestamp\": \"${BUILD_TIMESTAMP}\", \"public_url_base\": \"${PUBLIC_URL_BASE}\" }"
-        elif [ -n "${BUILD_PATH:-}" ]; then
-          R2_JSON=", \"r2_storage\": { \"build_path\": \"${BUILD_PATH}\", \"bucket_name\": \"${R2_BUCKET_NAME}\", \"endpoint\": \"${R2_ENDPOINT}\", \"build_timestamp\": \"${BUILD_TIMESTAMP}\" }"
-        fi
-
-        BODY="{\"status\": \"completed\", \"project_id\": \"${{ inputs.project_id }}\", \"build_timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"workflow_run_id\": \"${{ github.run_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"$R2_JSON }"
-
-        HTTP_CODE=$(curl -s -o /tmp/callback_success.json -w "%{http_code}" -X POST "${{ inputs.callback_url }}" \
+        # Include R2 information in callback
+        R2_JSON=", \"r2_build_path\": \"${BUILD_PATH}\", \"public_url\": \"${R2_PUBLIC_URL}/${BUILD_PATH}/dist/\""
+        
+        BODY="{\"status\": \"success\", \"project_id\": \"${{ inputs.project_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"$R2_JSON}"
+        
+        curl -X POST "${{ inputs.callback_url }}" \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
-          -d "$BODY")
-
-        echo "Callback HTTP_CODE: $HTTP_CODE"
-        echo "Callback response (truncated):"
-        tail -c 2000 /tmp/callback_success.json || true
-
-        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-          echo "Warning: Callback returned non-2xx status"
-        fi
+          -d "$BODY"
         
-        echo "Build completed successfully!"
+        echo "Build and deployment completed successfully!"
 
     - name: Send failure callback
       if: failure()
       run: |
         echo "Sending failure callback..."
         
-        FAIL_BODY="{\"status\": \"failed\", \"project_id\": \"${{ inputs.project_id }}\", \"error_message\": \"Build failed - check workflow logs\", \"workflow_run_id\": \"${{ github.run_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\" }"
-
-        HTTP_CODE=$(curl -s -o /tmp/callback_failure.json -w "%{http_code}" -X POST "${{ inputs.callback_url }}" \
+        BODY="{\"status\": \"failed\", \"project_id\": \"${{ inputs.project_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\", \"error\": \"Build or upload failed - check workflow logs\"}"
+        
+        curl -X POST "${{ inputs.callback_url }}" \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
-          -d "$FAIL_BODY")
-
-        echo "Callback HTTP_CODE: $HTTP_CODE"
-        echo "Callback response (truncated):"
-        tail -c 2000 /tmp/callback_failure.json || true
-
-        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-          echo "Warning: Callback returned non-2xx status"
-        fi
+          -d "$BODY"
+        
+        echo "Build failed - callback sent"
