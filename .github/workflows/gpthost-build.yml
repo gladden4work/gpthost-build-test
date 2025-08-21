@@ -190,6 +190,15 @@ jobs:
             "})" > vite.config.js
         fi
         
+        # Safety net: create fallback App.css if referenced but missing
+        for app in src/App.jsx src/App.tsx; do
+          if [ -f "$app" ] && grep -q "import './App.css'" "$app" && [ ! -f "src/App.css" ]; then
+            echo "Creating fallback src/App.css..."
+            printf '%s\n' ".App { text-align: center; }" > src/App.css
+            echo "✓ Created fallback src/App.css"
+          fi
+        done
+
         echo "Build configuration ready"
         echo "Project structure:"
         ls -la
