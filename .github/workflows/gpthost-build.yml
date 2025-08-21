@@ -335,7 +335,8 @@ jobs:
         export AWS_DEFAULT_REGION="auto"
         
         BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
-        BUILD_PATH="projects/${{ inputs.project_id }}/builds/$BUILD_TIMESTAMP"
+        # Canonical R2 build artifacts path used by Workers: builds/{projectId}/{timestamp}
+        BUILD_PATH="builds/${{ inputs.project_id }}/$BUILD_TIMESTAMP"
         echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
         echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
         echo "R2_ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
