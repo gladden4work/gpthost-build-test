@@ -59,67 +59,145 @@ jobs:
         BUILD_CONFIG: ${{ inputs.build_config }}
       run: |
         echo "Creating source files from workflow input..."
-        echo "$SOURCE_FILES" > source_files.json
         
-        # CRITICAL FIX: Use base64 encoding to handle all special characters reliably
-        # This approach avoids all separator and newline issues
-        echo "Processing source files with base64 encoding for reliability..."
+        # CRITICAL FIX: Handle the source files as a string that might need escaping
+        # First, we need to properly handle the JSON that might have unescaped characters
         
-        # Process each file using jq to extract key-value pairs
-        # Use base64 encoding for content to handle newlines and special characters
-        for filename in $(jq -r 'keys[]' source_files.json); do
-          echo "Processing file: $filename"
+        # Method 1: Try to parse as-is (might work if properly escaped)
+        if echo "$SOURCE_FILES" | jq -e . >/dev/null 2>&1; then
+          echo "Source files JSON is valid, processing normally..."
+          echo "$SOURCE_FILES" > source_files.json
+        else
+          echo "Source files JSON needs fixing, attempting to repair..."
           
-          # Get the content and encode it in base64 to handle all special characters
-          content=$(jq -r --arg key "$filename" '.[$key]' source_files.json | base64 -w 0)
+          # Method 2: Try to fix common issues
+          # Replace literal newlines with \n, handle other escaping issues
+          SOURCE_FILES_FIXED=$(echo "$SOURCE_FILES" | sed 's/\\\\/\\/g')
           
-          # Normalize filename
-          filename=${filename#./}
-          filename=${filename#/}
-
-          # Basic safety: avoid path traversal
-          if [[ "$filename" == *".."* ]]; then
-            echo "Skipping unsafe path: $filename"
-            continue
-          fi
-
-          # Decide target path
-          if [[ "$filename" == public/* ]]; then
-            target="$filename"
-          elif [[ "$filename" == src/* ]]; then
-            target="$filename"
-          elif [[ "$filename" == "index.html" ]]; then
-            # Place index.html in project root for Vite
-            target="index.html"
+          if echo "$SOURCE_FILES_FIXED" | jq -e . >/dev/null 2>&1; then
+            echo "Fixed JSON is valid, using repaired version..."
+            echo "$SOURCE_FILES_FIXED" > source_files.json
           else
-            target="src/$filename"
-          fi
+            echo "ERROR: Unable to parse source files JSON even after attempting repairs"
+            echo "Raw input (first 500 chars): ${SOURCE_FILES:0:500}"
+            
+            # Fallback: Try Python to handle the JSON
+            echo "Attempting Python fallback for JSON parsing..."
+            python3 -c "
+import json
+import sys
+import os
 
-          # Create directory if needed
-          mkdir -p "$(dirname "$target")"
-          
-          # Decode base64 and write to file
-          echo "$content" | base64 -d > "$target"
-          
-          # Verify file was created and show line count
-          if [ -f "$target" ]; then
-            line_count=$(wc -l < "$target")
-            echo "✓ Created: $target ($line_count lines)"
-          else
-            echo "✗ Failed to create: $target"
-            exit 1
+try:
+    # Try to parse the JSON from environment variable
+    source_files_raw = os.environ.get('SOURCE_FILES', '{}')
+    
+    # Attempt to fix common issues
+    # Remove backslash before exclamation marks
+    source_files_raw = source_files_raw.replace('\\\\!', '!')
+    
+    # Parse the JSON
+    source_files = json.loads(source_files_raw)
+    
+    # Write to file
+    with open('source_files.json', 'w') as f:
+        json.dump(source_files, f)
+    
+    print('Successfully parsed source files with Python')
+    sys.exit(0)
+except Exception as e:
+    print(f'Python parsing also failed: {e}')
+    sys.exit(1)
+" || {
+              echo "FATAL: Could not parse source files in any way"
+              echo "This is likely due to improperly escaped special characters in the input"
+              exit 1
+            }
           fi
-        done
+        fi
+        
+        # Now process the validated JSON file
+        echo "Processing source files..."
+        
+        # Read each file from the JSON and create it
+        python3 -c "
+import json
+import os
+import base64
+from pathlib import Path
+
+# Read the source files
+with open('source_files.json', 'r') as f:
+    source_files = json.load(f)
+
+# Process each file
+for filename, content in source_files.items():
+    # Normalize filename
+    filename = filename.lstrip('./')
+    
+    # Skip unsafe paths
+    if '..' in filename:
+        print(f'Skipping unsafe path: {filename}')
+        continue
+    
+    # Determine target path
+    if filename.startswith('public/'):
+        target = filename
+    elif filename.startswith('src/'):
+        target = filename
+    elif filename == 'index.html':
+        target = 'index.html'
+    else:
+        target = f'src/{filename}'
+    
+    # Create directory if needed
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Write the file
+    with open(target, 'w') as f:
+        f.write(content)
+    
+    # Verify and report
+    if os.path.exists(target):
+        line_count = len(content.splitlines())
+        print(f'✓ Created: {target} ({line_count} lines)')
+    else:
+        print(f'✗ Failed to create: {target}')
+        exit(1)
+
+print('All source files created successfully')
+"
         
         # Create package.json from build_config if not already created
         if [ ! -f "package.json" ]; then
           echo "Creating package.json from build_config..."
-          echo "$BUILD_CONFIG" > package.json
-          echo "✓ Created: package.json"
+          
+          # Similar safe parsing for build_config
+          if echo "$BUILD_CONFIG" | jq -e . >/dev/null 2>&1; then
+            echo "$BUILD_CONFIG" > package.json
+          else
+            # Try Python fallback for package.json too
+            python3 -c "
+import json
+import os
+
+try:
+    build_config_raw = os.environ.get('BUILD_CONFIG', '{}')
+    build_config = json.loads(build_config_raw)
+    
+    with open('package.json', 'w') as f:
+        json.dump(build_config, f, indent=2)
+    
+    print('✓ Created: package.json')
+except Exception as e:
+    print(f'Failed to create package.json: {e}')
+    exit(1)
+"
+          fi
         fi
         
         # Clean up temporary file
-        rm source_files.json
+        [ -f source_files.json ] && rm source_files.json
         
         echo "==============================================="
         echo "Source files created successfully"
