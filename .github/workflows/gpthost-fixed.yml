@@ -1,0 +1,362 @@
+name: GPTHost Build and Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'Project ID'
+        required: true
+        type: string
+      source_files:
+        description: 'Source files as JSON object'
+        required: true
+        type: string
+      build_config:
+        description: 'Build configuration (package.json content)'
+        required: true
+        type: string
+      callback_url:
+        description: 'Callback URL for build status'
+        required: true
+        type: string
+      callback_token:
+        description: 'Authentication token for callback'
+        required: true
+        type: string
+
+env:
+  NODE_VERSION: '20'
+  PROJECT_ID: ${{ inputs.project_id }}
+  CALLBACK_URL: ${{ inputs.callback_url }}
+  CALLBACK_TOKEN: ${{ inputs.callback_token }}
+  CACHE_VERSION: ${{ vars.CACHE_VERSION || '1' }}
+  R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL || '' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Create project directory
+      run: |
+        echo "Creating project directory structure..."
+        mkdir -p projects/${{ inputs.project_id }}/src
+        mkdir -p projects/${{ inputs.project_id }}/public
+        mkdir -p artifacts/${{ inputs.project_id }}
+        echo "Project directory created successfully"
+
+    - name: Create source files from workflow input
+      working-directory: projects/${{ inputs.project_id }}
+      env:
+        SOURCE_FILES: ${{ inputs.source_files }}
+        BUILD_CONFIG: ${{ inputs.build_config }}
+      run: |
+        echo "Creating source files from workflow input..."
+        
+        # Write source files JSON to a file
+        cat > source_files.json << 'ENDOFJSON'
+        ${{ inputs.source_files }}
+        ENDOFJSON
+        
+        # Write build config to package.json
+        cat > package.json << 'ENDOFPKG'
+        ${{ inputs.build_config }}
+        ENDOFPKG
+        
+        # Use Python to process the source files safely
+        python3 << 'ENDOFPYTHON'
+import json
+import os
+from pathlib import Path
+
+try:
+    # Read and parse source files
+    with open('source_files.json', 'r') as f:
+        source_files = json.load(f)
+    
+    # Process each file
+    for filename, content in source_files.items():
+        # Normalize filename
+        filename = filename.lstrip('./')
+        
+        # Skip unsafe paths
+        if '..' in filename:
+            print(f'Skipping unsafe path: {filename}')
+            continue
+        
+        # Determine target path
+        if filename.startswith('public/'):
+            target = filename
+        elif filename.startswith('src/'):
+            target = filename
+        elif filename == 'index.html':
+            target = 'index.html'
+        else:
+            target = f'src/{filename}'
+        
+        # Create directory if needed
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write the file
+        with open(target, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        # Report
+        if os.path.exists(target):
+            line_count = len(content.splitlines())
+            print(f'✓ Created: {target} ({line_count} lines)')
+        else:
+            print(f'✗ Failed to create: {target}')
+            exit(1)
+    
+    print('All source files created successfully')
+    
+except json.JSONDecodeError as e:
+    print(f'ERROR: Invalid JSON in source_files: {e}')
+    print('First 500 chars of input:')
+    with open('source_files.json', 'r') as f:
+        print(f.read()[:500])
+    exit(1)
+except Exception as e:
+    print(f'ERROR: {e}')
+    exit(1)
+ENDOFPYTHON
+        
+        # Clean up
+        rm -f source_files.json
+        
+        echo "==============================================="
+        echo "Source files created successfully"
+        echo "==============================================="
+        echo "Project structure:"
+        ls -la
+        if [ -d "src" ]; then
+          echo ""
+          echo "Source directory contents:"
+          ls -la src/
+        fi
+
+    - name: Install dependencies
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Installing dependencies..."
+        npm install --no-audit --no-fund
+        echo "Dependencies installed successfully"
+
+    - name: Create build configuration
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Setting up build environment..."
+        
+        # Ensure index.html exists in project root for Vite
+        if [ ! -f "index.html" ]; then
+          if [ -f "public/index.html" ]; then
+            echo "Moving index.html from public/ to project root for Vite..."
+            mv public/index.html index.html
+          else
+            echo "Creating default index.html in project root..."
+            cat > index.html << 'ENDHTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPTHost Build</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
+ENDHTML
+          fi
+        fi
+        
+        # Create vite config if missing
+        if [ ! -f "vite.config.js" ] && [ ! -f "vite.config.ts" ]; then
+          cat > vite.config.js << 'ENDVITE'
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true
+  }
+})
+ENDVITE
+        fi
+        
+        echo "Build configuration ready"
+        echo "Project structure:"
+        ls -la
+
+    - name: Build project
+      working-directory: projects/${{ inputs.project_id }}
+      run: |
+        echo "Building project..."
+        
+        # Run build
+        npm run build
+        
+        echo "Build completed successfully"
+        
+        # Verify dist folder
+        echo "==============================================="
+        echo "VERIFYING BUILD OUTPUT:"
+        echo "==============================================="
+        
+        if [ ! -d "dist" ]; then
+          echo "✗ CRITICAL ERROR: dist folder does not exist!"
+          exit 1
+        fi
+        
+        echo "✓ dist folder exists"
+        echo "Contents of dist folder:"
+        ls -la dist/
+        
+        if [ ! -f "dist/index.html" ]; then
+          echo "✗ CRITICAL ERROR: dist/index.html not found!"
+          exit 1
+        fi
+        
+        echo "✓ dist/index.html found"
+        echo "Build verification completed successfully"
+
+    - name: Prepare artifacts
+      run: |
+        echo "==============================================="
+        echo "PREPARING ARTIFACTS FOR UPLOAD:"
+        echo "==============================================="
+        
+        # Copy dist contents to artifacts
+        cp -r projects/${{ inputs.project_id }}/dist/* artifacts/${{ inputs.project_id }}/
+        
+        # Create build manifest
+        cat > artifacts/${{ inputs.project_id }}/build-manifest.json << ENDMANIFEST
+{
+  "project_id": "${{ inputs.project_id }}",
+  "build_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "workflow_run": "${{ github.run_id }}",
+  "status": "completed"
+}
+ENDMANIFEST
+        
+        echo "Files in artifacts:"
+        find artifacts/${{ inputs.project_id }} -type f | head -20
+        echo ""
+        echo "Total size:"
+        du -sh artifacts/${{ inputs.project_id }}/
+
+    - name: Upload to Cloudflare R2
+      if: success()
+      working-directory: artifacts/${{ inputs.project_id }}
+      env:
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        R2_PUBLIC_URL: ${{ env.R2_PUBLIC_URL }}
+      run: |
+        echo "==============================================="
+        echo "UPLOADING TO CLOUDFLARE R2:"
+        echo "==============================================="
+        
+        # Verify credentials
+        if [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_BUCKET_NAME" ]; then
+          echo "✗ ERROR: Missing R2 credentials"
+          exit 1
+        fi
+        
+        # Verify files exist
+        if [ ! -f "index.html" ]; then
+          echo "✗ ERROR: index.html not found!"
+          ls -la
+          exit 1
+        fi
+        
+        # Setup AWS CLI if needed
+        if ! command -v aws >/dev/null 2>&1; then
+          echo "Installing AWS CLI..."
+          curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+        fi
+        
+        # Configure AWS CLI
+        ENDPOINT="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
+        export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+        export AWS_DEFAULT_REGION="auto"
+        
+        # Upload to R2
+        BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+        BUILD_PATH="builds/${{ inputs.project_id }}/$BUILD_TIMESTAMP"
+        
+        echo "Uploading to: s3://$R2_BUCKET_NAME/$BUILD_PATH/"
+        
+        aws s3 sync . "s3://$R2_BUCKET_NAME/$BUILD_PATH/" \
+          --endpoint-url "$ENDPOINT" \
+          --region auto \
+          --no-progress
+        
+        echo "✓ Upload completed"
+        echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
+        echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
+
+    - name: Send success callback
+      if: success()
+      run: |
+        echo "Sending success callback..."
+        
+        # Build callback payload
+        PAYLOAD=$(cat << ENDPAYLOAD
+{
+  "status": "success",
+  "project_id": "${{ inputs.project_id }}",
+  "github_run_id": "${{ github.run_id }}",
+  "github_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+  "r2_build_path": "${BUILD_PATH}",
+  "public_url": "${R2_PUBLIC_URL}/${BUILD_PATH}/",
+  "build_timestamp": "${BUILD_TIMESTAMP}"
+}
+ENDPAYLOAD
+        )
+        
+        # Send callback
+        curl -X POST "${{ inputs.callback_url }}" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+          -d "$PAYLOAD"
+        
+        echo "Build and deployment completed successfully!"
+
+    - name: Send failure callback
+      if: failure()
+      run: |
+        echo "Sending failure callback..."
+        
+        PAYLOAD=$(cat << ENDPAYLOAD
+{
+  "status": "failed",
+  "project_id": "${{ inputs.project_id }}",
+  "github_run_id": "${{ github.run_id }}",
+  "github_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+  "error": "Build or upload failed - check workflow logs"
+}
+ENDPAYLOAD
+        )
+        
+        curl -X POST "${{ inputs.callback_url }}" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+          -d "$PAYLOAD"
+        
+        echo "Build failed - callback sent"
