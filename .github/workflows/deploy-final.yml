@@ -128,22 +128,39 @@ jobs:
         R2_PUBLIC_URL: https://pub-39b5cb8eda96466d95d0bb7c5d4d44f8.r2.dev
       run: |
         DEPLOYMENT_URL="${R2_PUBLIC_URL}/sites/${PROJECT_ID}/index.html"
+        BUILD_TS="${BUILD_TIMESTAMP:-$(date +%s)}"
         
         echo "Sending success callback..."
         echo "Deployment URL: $DEPLOYMENT_URL"
+        echo "Project ID: $PROJECT_ID"
         
-        curl -X POST $CALLBACK_URL \
+        # Generate run ID from workflow context
+        GITHUB_RUN_ID="${{ github.run_id }}"
+        GITHUB_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}"
+        
+        # Send callback with proper JSON
+        CALLBACK_JSON=$(cat <<EOF
+        {
+          "project_id": "${PROJECT_ID}",
+          "status": "success",
+          "github_run_id": "${GITHUB_RUN_ID}",
+          "github_run_url": "${GITHUB_RUN_URL}",
+          "framework": "react",
+          "node_version": "20",
+          "r2_build_path": "builds/${PROJECT_ID}/${BUILD_TS}/",
+          "r2_bucket_name": "${R2_BUCKET_NAME:-gpthost-builds-staging}",
+          "public_url": "${DEPLOYMENT_URL}",
+          "message": "Build and deployment successful"
+        }
+        EOF
+        )
+        
+        echo "Callback JSON: $CALLBACK_JSON"
+        
+        curl -X POST "$CALLBACK_URL" \
           -H "Authorization: Bearer $CALLBACK_TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{
-            \"project_id\": \"$PROJECT_ID\",
-            \"status\": \"success\",
-            \"build_timestamp\": \"${BUILD_TIMESTAMP:-$(date +%s)}\",
-            \"r2_path\": \"builds/$PROJECT_ID/${BUILD_TIMESTAMP:-$(date +%s)}/\",
-            \"deployment_url\": \"$DEPLOYMENT_URL\",
-            \"r2_upload\": \"${r2_upload_success:-false}\",
-            \"message\": \"Build and deployment successful\"
-          }"
+          -d "$CALLBACK_JSON"
           
     - name: Send failure callback
       if: failure()
