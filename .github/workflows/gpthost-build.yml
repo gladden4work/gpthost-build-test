@@ -356,14 +356,14 @@ jobs:
         
         echo "Uploading to: s3://$R2_BUCKET_NAME/$BUILD_PATH/"
         
-        # Upload all files with proper paths
-        aws s3 sync . "s3://$R2_BUCKET_NAME/$BUILD_PATH/dist/" \
+        # Upload all files with proper paths (upload to $BUILD_PATH root)
+        aws s3 sync . "s3://$R2_BUCKET_NAME/$BUILD_PATH/" \
           --endpoint-url "$ENDPOINT" \
           --region auto \
           --no-progress
         
         echo "✓ Upload completed successfully"
-        echo "Files available at: $BUILD_PATH/dist/"
+        echo "Files available at: $BUILD_PATH/"
         
         # Store paths for callback
         echo "BUILD_PATH=$BUILD_PATH" >> $GITHUB_ENV
@@ -375,7 +375,11 @@ jobs:
         echo "Sending success callback..."
         
         # Include R2 information in callback
-        R2_JSON=", \"r2_build_path\": \"${BUILD_PATH}\", \"public_url\": \"${R2_PUBLIC_URL}/${BUILD_PATH}/dist/\""
+        # Public URL should point to the build path root (no trailing /dist)
+        R2_JSON=", \"r2_build_path\": \"${BUILD_PATH}\", \"public_url\": \"${R2_PUBLIC_URL}/${BUILD_PATH}/\""
+        
+        # Small delay to avoid R2 listing race during auto-deploy
+        sleep 2
         
         BODY="{\"status\": \"success\", \"project_id\": \"${{ inputs.project_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"$R2_JSON}"
         
