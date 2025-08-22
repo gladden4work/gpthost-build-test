@@ -1,0 +1,87 @@
+name: Deploy Final
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'Project ID'
+        required: true
+        type: string
+      source_files:
+        description: 'Source files JSON'
+        required: true
+        type: string
+      build_config:
+        description: 'Build config JSON'
+        required: true
+        type: string
+      callback_url:
+        description: 'Callback URL'
+        required: true
+        type: string
+      callback_token:
+        description: 'Callback token'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        
+    - name: Create and build project
+      env:
+        PROJECT_ID: ${{ inputs.project_id }}
+      run: |
+        echo "Creating project structure..."
+        mkdir -p project/src
+        cd project
+        
+        # Write source files using heredoc
+        cat > source_files.json << 'EOF'
+        ${{ inputs.source_files }}
+        EOF
+        
+        cat > package.json << 'EOF'
+        ${{ inputs.build_config }}
+        EOF
+        
+        # Process files with Python
+        python3 << 'PYTHON'
+        import json
+        import os
+        
+        with open('source_files.json', 'r') as f:
+            files = json.load(f)
+            
+        for path, content in files.items():
+            dir_name = os.path.dirname(path)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+            with open(path, 'w') as f:
+                f.write(content)
+            print(f"Created: {path}")
+        PYTHON
+        
+        # Install and build
+        npm install
+        npm run build || true
+        
+        echo "Build complete!"
+        ls -la dist/ || echo "No dist folder"
+        
+    - name: Callback
+      if: always()
+      run: |
+        curl -X POST ${{ inputs.callback_url }} \
+          -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "project_id": "${{ inputs.project_id }}",
+            "status": "${{ job.status }}",
+            "message": "Build completed"
+          }'
