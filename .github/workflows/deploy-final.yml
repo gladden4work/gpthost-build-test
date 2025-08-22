@@ -99,22 +99,26 @@ jobs:
         BUILD_TIMESTAMP=$(date +%s)
         echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
         
-        echo "Uploading to R2 bucket: $R2_BUCKET_NAME"
-        echo "Path: builds/$PROJECT_ID/$BUILD_TIMESTAMP/"
+        echo "R2 Configuration:"
+        echo "  Bucket: $R2_BUCKET_NAME"
+        echo "  Account ID: $CLOUDFLARE_ACCOUNT_ID"
+        echo "  Path: builds/$PROJECT_ID/$BUILD_TIMESTAMP/"
         
-        # Upload dist folder to R2
+        # Check dist folder exists
+        echo "Checking build output..."
+        ls -la project/dist/
+        
+        # Upload dist folder to R2 - WITH proper authentication
+        echo "Uploading to builds path..."
         aws s3 sync project/dist/ \
           s3://$R2_BUCKET_NAME/builds/$PROJECT_ID/$BUILD_TIMESTAMP/ \
-          --endpoint-url https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com \
-          --no-sign-request \
-          --no-verify-ssl 2>/dev/null || true
+          --endpoint-url https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com
         
-        # Also upload to deployments for immediate access
-        aws s3 sync project/dist/ \
-          s3://$R2_BUCKET_NAME/sites/$PROJECT_ID/ \
+        # Verify upload
+        echo "Verifying upload..."
+        aws s3 ls s3://$R2_BUCKET_NAME/builds/$PROJECT_ID/$BUILD_TIMESTAMP/ \
           --endpoint-url https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com \
-          --no-sign-request \
-          --no-verify-ssl 2>/dev/null || true
+          --recursive
         
         echo "Upload complete!"
         echo "r2_upload_success=true" >> $GITHUB_ENV
