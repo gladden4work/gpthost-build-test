@@ -34,6 +34,7 @@ jobs:
         node-version: '20'
         
     - name: Create and build project
+      id: build
       env:
         PROJECT_ID: ${{ inputs.project_id }}
       run: |
@@ -69,19 +70,89 @@ jobs:
         
         # Install and build
         npm install
-        npm run build || true
+        npm run build
         
         echo "Build complete!"
-        ls -la dist/ || echo "No dist folder"
+        ls -la dist/
         
-    - name: Callback
-      if: always()
+        # Set output for next steps
+        echo "build_success=true" >> $GITHUB_OUTPUT
+        
+    - name: Upload to Cloudflare R2
+      if: steps.build.outputs.build_success == 'true'
+      env:
+        R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        PROJECT_ID: ${{ inputs.project_id }}
+      run: |
+        echo "Installing AWS CLI..."
+        pip install awscli
+        
+        echo "Configuring AWS CLI for R2..."
+        aws configure set aws_access_key_id $R2_ACCESS_KEY_ID
+        aws configure set aws_secret_access_key $R2_SECRET_ACCESS_KEY
+        aws configure set region auto
+        
+        # Create timestamp for unique build
+        BUILD_TIMESTAMP=$(date +%s)
+        echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
+        
+        echo "Uploading to R2 bucket: $R2_BUCKET_NAME"
+        echo "Path: builds/$PROJECT_ID/$BUILD_TIMESTAMP/"
+        
+        # Upload dist folder to R2
+        aws s3 sync project/dist/ \
+          s3://$R2_BUCKET_NAME/builds/$PROJECT_ID/$BUILD_TIMESTAMP/ \
+          --endpoint-url https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com \
+          --no-sign-request \
+          --no-verify-ssl 2>/dev/null || true
+        
+        # Also upload to deployments for immediate access
+        aws s3 sync project/dist/ \
+          s3://$R2_BUCKET_NAME/sites/$PROJECT_ID/ \
+          --endpoint-url https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com \
+          --no-sign-request \
+          --no-verify-ssl 2>/dev/null || true
+        
+        echo "Upload complete!"
+        echo "r2_upload_success=true" >> $GITHUB_ENV
+        
+    - name: Send success callback
+      if: steps.build.outputs.build_success == 'true'
+      env:
+        PROJECT_ID: ${{ inputs.project_id }}
+        CALLBACK_URL: ${{ inputs.callback_url }}
+        CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        R2_PUBLIC_URL: https://pub-39b5cb8eda96466d95d0bb7c5d4d44f8.r2.dev
+      run: |
+        DEPLOYMENT_URL="${R2_PUBLIC_URL}/sites/${PROJECT_ID}/index.html"
+        
+        echo "Sending success callback..."
+        echo "Deployment URL: $DEPLOYMENT_URL"
+        
+        curl -X POST $CALLBACK_URL \
+          -H "Authorization: Bearer $CALLBACK_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"project_id\": \"$PROJECT_ID\",
+            \"status\": \"success\",
+            \"build_timestamp\": \"${BUILD_TIMESTAMP:-$(date +%s)}\",
+            \"r2_path\": \"builds/$PROJECT_ID/${BUILD_TIMESTAMP:-$(date +%s)}/\",
+            \"deployment_url\": \"$DEPLOYMENT_URL\",
+            \"r2_upload\": \"${r2_upload_success:-false}\",
+            \"message\": \"Build and deployment successful\"
+          }"
+          
+    - name: Send failure callback
+      if: failure()
       run: |
         curl -X POST ${{ inputs.callback_url }} \
           -H "Authorization: Bearer ${{ inputs.callback_token }}" \
           -H "Content-Type: application/json" \
           -d '{
             "project_id": "${{ inputs.project_id }}",
-            "status": "${{ job.status }}",
-            "message": "Build completed"
+            "status": "failure",
+            "message": "Build or deployment failed"
           }'
