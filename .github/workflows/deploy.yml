@@ -1,0 +1,27 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        required: true
+        type: string
+      source_files:
+        required: true
+        type: string
+      build_config:
+        required: true
+        type: string
+      callback_url:
+        required: true
+        type: string
+      callback_token:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Starting build for ${{ inputs.project_id }}"
+      - run: echo "${{ inputs.source_files }}" | head -c 100
