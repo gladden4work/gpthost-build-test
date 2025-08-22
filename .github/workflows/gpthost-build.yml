@@ -376,10 +376,10 @@ jobs:
         
         # Include R2 information in callback
         # Public URL should point to the build path root (no trailing /dist)
-        R2_JSON=", \"r2_build_path\": \"${BUILD_PATH}\", \"public_url\": \"${R2_PUBLIC_URL}/${BUILD_PATH}/\""
+        R2_JSON=", \"r2_build_path\": \"${BUILD_PATH}\", \"public_url\": \"${R2_PUBLIC_URL}/${BUILD_PATH}/\", \"r2_bucket_name\": \"${R2_BUCKET_NAME}\", \"r2_endpoint\": \"${ENDPOINT}\", \"build_timestamp\": \"${BUILD_TIMESTAMP}\""
         
         # Small delay to avoid R2 listing race during auto-deploy
-        sleep 2
+        sleep 4
         
         BODY="{\"status\": \"success\", \"project_id\": \"${{ inputs.project_id }}\", \"github_run_id\": \"${{ github.run_id }}\", \"github_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"$R2_JSON}"
         
