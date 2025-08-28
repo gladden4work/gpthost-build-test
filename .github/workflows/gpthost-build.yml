@@ -83,36 +83,29 @@ jobs:
             
             # Fallback: Try Python to handle the JSON
             echo "Attempting Python fallback for JSON parsing..."
-            python3 -c "
+            python3 << 'PY'
 import json
 import sys
 import os
 
 try:
-    # Try to parse the JSON from environment variable
     source_files_raw = os.environ.get('SOURCE_FILES', '{}')
-    
     # Attempt to fix common issues
-    # Remove backslash before exclamation marks
-    source_files_raw = source_files_raw.replace('\\\\!', '!')
-    
-    # Parse the JSON
+    source_files_raw = source_files_raw.replace('\\!', '!')
     source_files = json.loads(source_files_raw)
-    
-    # Write to file
     with open('source_files.json', 'w') as f:
         json.dump(source_files, f)
-    
     print('Successfully parsed source files with Python')
     sys.exit(0)
 except Exception as e:
     print(f'Python parsing also failed: {e}')
     sys.exit(1)
-" || {
+PY
+            if [ "$?" -ne 0 ]; then
               echo "FATAL: Could not parse source files in any way"
               echo "This is likely due to improperly escaped special characters in the input"
               exit 1
-            }
+            fi
           fi
         fi
         
@@ -120,27 +113,19 @@ except Exception as e:
         echo "Processing source files..."
         
         # Read each file from the JSON and create it
-        python3 -c "
+        python3 << 'PY'
 import json
 import os
-import base64
 from pathlib import Path
 
-# Read the source files
 with open('source_files.json', 'r') as f:
     source_files = json.load(f)
 
-# Process each file
 for filename, content in source_files.items():
-    # Normalize filename
     filename = filename.lstrip('./')
-    
-    # Skip unsafe paths
     if '..' in filename:
         print(f'Skipping unsafe path: {filename}')
         continue
-    
-    # Determine target path
     if filename.startswith('public/'):
         target = filename
     elif filename.startswith('src/'):
@@ -149,15 +134,9 @@ for filename, content in source_files.items():
         target = 'index.html'
     else:
         target = f'src/{filename}'
-    
-    # Create directory if needed
     Path(target).parent.mkdir(parents=True, exist_ok=True)
-    
-    # Write the file
     with open(target, 'w') as f:
         f.write(content)
-    
-    # Verify and report
     if os.path.exists(target):
         line_count = len(content.splitlines())
         print(f'✓ Created: {target} ({line_count} lines)')
@@ -166,7 +145,7 @@ for filename, content in source_files.items():
         exit(1)
 
 print('All source files created successfully')
-"
+PY
         
         # Create package.json from build_config if not already created
         if [ ! -f "package.json" ]; then
@@ -177,22 +156,20 @@ print('All source files created successfully')
             echo "$BUILD_CONFIG" > package.json
           else
             # Try Python fallback for package.json too
-            python3 -c "
+            python3 << 'PY'
 import json
 import os
 
 try:
     build_config_raw = os.environ.get('BUILD_CONFIG', '{}')
     build_config = json.loads(build_config_raw)
-    
     with open('package.json', 'w') as f:
         json.dump(build_config, f, indent=2)
-    
     print('✓ Created: package.json')
 except Exception as e:
     print(f'Failed to create package.json: {e}')
     exit(1)
-"
+PY
           fi
         fi
         
