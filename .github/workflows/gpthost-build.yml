@@ -23,6 +23,14 @@ on:
         description: 'Correlation ID (optional)'
         required: false
         type: string
+      framework:
+        description: 'Framework (react|vue|svelte|plain)'
+        required: false
+        type: string
+      build_command:
+        description: 'Custom build command (optional)'
+        required: false
+        type: string
 
 jobs:
   build:
@@ -87,7 +95,109 @@ jobs:
               '</html>' > index.html
           fi
 
+      - name: Setup Node.js (for frameworks)
+        if: ${{ contains(inputs.framework, 'react') || contains(inputs.framework, 'vue') || contains(inputs.framework, 'svelte') }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Framework build (Vite)
+        if: ${{ contains(inputs.framework, 'react') || contains(inputs.framework, 'vue') || contains(inputs.framework, 'svelte') }}
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          # Create package.json if missing
+          if [ ! -f package.json ]; then
+            if [ "${{ inputs.framework }}" = "react" ]; then
+              printf '%s\n' \
+                '{' \
+                '  "name": "gpthost-app",' \
+                '  "private": true,' \
+                '  "scripts": { "build": "vite build" },' \
+                '  "dependencies": { "react": "^18.3.1", "react-dom": "^18.3.1" },' \
+                '  "devDependencies": { "vite": "^5.4.8", "@vitejs/plugin-react": "^4.3.1" }' \
+                '}' > package.json
+            elif [ "${{ inputs.framework }}" = "vue" ]; then
+              printf '%s\n' \
+                '{' \
+                '  "name": "gpthost-app",' \
+                '  "private": true,' \
+                '  "scripts": { "build": "vite build" },' \
+                '  "dependencies": { "vue": "^3.4.0" },' \
+                '  "devDependencies": { "vite": "^5.4.8", "@vitejs/plugin-vue": "^5.1.4" }' \
+                '}' > package.json
+            elif [ "${{ inputs.framework }}" = "svelte" ]; then
+              printf '%s\n' \
+                '{' \
+                '  "name": "gpthost-app",' \
+                '  "private": true,' \
+                '  "scripts": { "build": "vite build" },' \
+                '  "dependencies": { "svelte": "^4.2.0" },' \
+                '  "devDependencies": { "vite": "^5.4.8", "@sveltejs/vite-plugin-svelte": "^3.0.2" }' \
+                '}' > package.json
+            else
+              printf '%s\n' '{ "name": "gpthost-app", "private": true, "scripts": { "build": "vite build" }, "devDependencies": { "vite": "^5.4.8" } }' > package.json
+            fi
+          fi
+
+          # Create vite.config.js if missing
+          if [ ! -f vite.config.js ] && [ ! -f vite.config.ts ]; then
+            if [ "${{ inputs.framework }}" = "react" ]; then
+              printf '%s\n' \
+                "import { defineConfig } from 'vite'" \
+                "import react from '@vitejs/plugin-react'" \
+                "export default defineConfig({ plugins: [react()], build: { outDir: 'dist', emptyOutDir: true } })" \
+                > vite.config.js
+            elif [ "${{ inputs.framework }}" = "vue" ]; then
+              printf '%s\n' \
+                "import { defineConfig } from 'vite'" \
+                "import vue from '@vitejs/plugin-vue'" \
+                "export default defineConfig({ plugins: [vue()], build: { outDir: 'dist', emptyOutDir: true } })" \
+                > vite.config.js
+            elif [ "${{ inputs.framework }}" = "svelte" ]; then
+              printf '%s\n' \
+                "import { defineConfig } from 'vite'" \
+                "import { svelte } from '@sveltejs/vite-plugin-svelte'" \
+                "export default defineConfig({ plugins: [svelte()], build: { outDir: 'dist', emptyOutDir: true } })" \
+                > vite.config.js
+            else
+              printf '%s\n' \
+                "import { defineConfig } from 'vite'" \
+                "export default defineConfig({ build: { outDir: 'dist', emptyOutDir: true } })" \
+                > vite.config.js
+            fi
+          fi
+
+          # Ensure basic entry exists
+          if [ ! -f src/main.jsx ] && [ "${{ inputs.framework }}" = "react" ]; then
+            mkdir -p src
+            printf '%s\n' \
+              "import React from 'react'" \
+              "import { createRoot } from 'react-dom/client'" \
+              "import App from './App.jsx'" \
+              "createRoot(document.getElementById('root')).render(<App />)" \
+              > src/main.jsx
+            if [ ! -f src/App.jsx ]; then
+              printf '%s\n' "export default function App(){return React.createElement('div',null,'GPTHost React Build')}" > src/App.jsx
+            fi
+            # Ensure index.html references main.jsx
+            if ! grep -q 'src/main.jsx' index.html 2>/dev/null; then
+              [ -f index.html ] || printf '%s\n' '<!DOCTYPE html><html><body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>' > index.html
+              sed -i 's#</body>#  <script type="module" src="/src/main.jsx"></script>\n</body>#' index.html || true
+            fi
+          fi
+
+          echo "Installing dependencies..."
+          npm ci || npm install --no-audit --no-fund
+          echo "Building..."
+          if [ -n "${{ inputs.build_command }}" ]; then
+            bash -lc "${{ inputs.build_command }}"
+          else
+            npm run build
+          fi
+
       - name: Minimal build (no Node toolchain)
+        if: ${{ ! (contains(inputs.framework, 'react') || contains(inputs.framework, 'vue') || contains(inputs.framework, 'svelte')) }}
         working-directory: projects/${{ inputs.project_id }}
         run: |
           set -euo pipefail
