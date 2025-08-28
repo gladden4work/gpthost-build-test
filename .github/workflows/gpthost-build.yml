@@ -73,19 +73,18 @@ jobs:
 
           # Ensure index.html exists
           if [ ! -f index.html ]; then
-            cat > index.html << 'HTML'
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GPTHost Minimal</title>
-  </head>
-  <body>
-    <div id="root">GPTHost Minimal Build</div>
-  </body>
-  </html>
-HTML
+            printf '%s\n' \
+              '<!DOCTYPE html>' \
+              '<html lang="en">' \
+              '  <head>' \
+              '    <meta charset="UTF-8" />' \
+              '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
+              '    <title>GPTHost Minimal</title>' \
+              '  </head>' \
+              '  <body>' \
+              '    <div id="root">GPTHost Minimal Build</div>' \
+              '  </body>' \
+              '</html>' > index.html
           fi
 
       - name: Minimal build (no Node toolchain)
