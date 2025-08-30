@@ -330,3 +330,4 @@ jobs:
           --arg rid "${{ github.run_id }}" \
           --arg msg "Build failed in GitHub Actions" \
           '{project_id:$pid,status:"failure",github_run_id:$rid,error:$msg}')"
+
