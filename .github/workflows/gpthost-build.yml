@@ -297,3 +297,36 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
             -d "$BODY"
+
+  - name: Post success callback
+    if: ${{ success() }}
+    env:
+      CALLBACK_URL: ${{ inputs.callback_url }}
+      CALLBACK_TOKEN: ${{ inputs.callback_token }}
+      PROJECT_ID: ${{ inputs.project_id }}
+      R2_BUILD_PATH: builds/${{ inputs.project_id }}/dist/
+    run: |
+      curl -sS -X POST "$CALLBACK_URL" \
+        -H "Authorization: Bearer $CALLBACK_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+          --arg pid "$PROJECT_ID" \
+          --arg rid "${{ github.run_id }}" \
+          --arg path "$R2_BUILD_PATH" \
+          '{project_id:$pid,status:"success",github_run_id:$rid,r2_build_path:$path}')"
+
+  - name: Post failure callback
+    if: ${{ failure() }}
+    env:
+      CALLBACK_URL: ${{ inputs.callback_url }}
+      CALLBACK_TOKEN: ${{ inputs.callback_token }}
+      PROJECT_ID: ${{ inputs.project_id }}
+    run: |
+      curl -sS -X POST "$CALLBACK_URL" \
+        -H "Authorization: Bearer $CALLBACK_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+          --arg pid "$PROJECT_ID" \
+          --arg rid "${{ github.run_id }}" \
+          --arg msg "Build failed in GitHub Actions" \
+          '{project_id:$pid,status:"failure",github_run_id:$rid,error:$msg}')"
