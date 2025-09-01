@@ -27,6 +27,14 @@ on:
         description: Custom build command (optional, ignored by minimal flow)
         required: false
         type: string
+      build_config:
+        description: Optional build config JSON (ignored by minimal flow)
+        required: false
+        type: string
+      correlation_id:
+        description: Correlation ID for tracing (optional)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -160,4 +168,3 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
             -d "$BODY"
-
