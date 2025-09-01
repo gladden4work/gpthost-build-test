@@ -124,54 +124,17 @@ jobs:
           cp -r "projects/${{ inputs.project_id }}/dist/." "artifacts/${{ inputs.project_id }}/"
           test -f "artifacts/${{ inputs.project_id }}/index.html"
 
-      - name: Upload dist/ to Cloudflare R2 (builds/<project_id>/dist/)
-        working-directory: artifacts/${{ inputs.project_id }}
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-        run: |
-          set -euo pipefail
-          # Sanitize potential stray whitespace from secrets
-          ACCOUNT_ID_CLEAN=$(printf "%s" "$CLOUDFLARE_ACCOUNT_ID" | tr -d '\r' | tr -d '\n' | xargs)
-          BUCKET_CLEAN=$(printf "%s" "$R2_BUCKET_NAME" | tr -d '\r' | tr -d '\n' | xargs)
-          ENDPOINT="https://${ACCOUNT_ID_CLEAN}.r2.cloudflarestorage.com"
-          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
-          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-          export AWS_DEFAULT_REGION="us-east-1"
-          export AWS_S3_FORCE_PATH_STYLE="true"
-          export AWS_ENDPOINT_URL_S3="$ENDPOINT"
-          export AWS_ENDPOINT_URL="$ENDPOINT"
-          export AWS_REGION="us-east-1"
-          aws --version || true
-          echo "Using endpoint: $ENDPOINT"
-          echo "Target bucket: $BUCKET_CLEAN"
-          # Configure AWS CLI S3 client explicitly for R2 (config-layer)
-          aws configure set default.s3.endpoint_url "$ENDPOINT"
-          aws configure set default.s3.addressing_style path
-          aws configure set default.region "$AWS_REGION"
-
-          echo "Uploading files via s3api put-object..."
-          DEST_PREFIX="builds/${{ inputs.project_id }}/dist/"
-          # Find all files and upload individually using s3api (more reliable for custom endpoints)
-          while IFS= read -r -d '' file; do
-            key="${DEST_PREFIX}${file#./}"
-            # Determine content type (best effort)
-            ct="application/octet-stream"
-            if command -v file >/dev/null 2>&1; then
-              mt=$(file -b --mime-type "$file" || true)
-              [ -n "${mt:-}" ] && ct="$mt"
-            fi
-            echo "Uploading $file -> s3://$BUCKET_CLEAN/$key ($ct)"
-            aws s3api put-object \
-              --bucket "$BUCKET_CLEAN" \
-              --key "$key" \
-              --body "$file" \
-              --content-type "$ct" \
-              --endpoint-url "$ENDPOINT" \
-              --region "$AWS_REGION" >/dev/null
-          done < <(find . -type f -print0)
+      - name: Upload dist to R2
+        uses: ryand56/r2-upload-action@v1
+        with:
+          endpoint: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          accessKeyId: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secretAccessKey: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket: ${{ secrets.R2_BUCKET_NAME }}
+          source: artifacts/${{ inputs.project_id }}/
+          destination: builds/${{ inputs.project_id }}/dist/
+          pathStyle: true
+          region: us-east-1
 
       - name: Success callback (auto-deploy)
         env:
