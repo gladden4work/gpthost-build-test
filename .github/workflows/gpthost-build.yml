@@ -124,15 +124,27 @@ jobs:
           cp -r "projects/${{ inputs.project_id }}/dist/." "artifacts/${{ inputs.project_id }}/"
           test -f "artifacts/${{ inputs.project_id }}/index.html"
 
-      - name: Upload dist to R2
-        uses: ryand56/r2-upload-action@v1
-        with:
-          r2-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          r2-bucket: ${{ secrets.R2_BUCKET_NAME }}
-          source-dir: artifacts/${{ inputs.project_id }}/
-          destination-dir: builds/${{ inputs.project_id }}/dist/
+      - name: Upload dist to R2 (AWS CLI)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          set -euo pipefail
+          echo "Uploading to R2 using AWS CLI..."
+          
+          # Configure endpoint URL for Cloudflare R2
+          ENDPOINT_URL="https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          
+          # Upload files to R2
+          aws s3 cp \
+            "artifacts/${{ inputs.project_id }}/" \
+            "s3://${{ secrets.R2_BUCKET_NAME }}/builds/${{ inputs.project_id }}/dist/" \
+            --recursive \
+            --endpoint-url "$ENDPOINT_URL" \
+            --no-progress
+          
+          echo "Upload completed successfully"
 
       - name: Success callback (auto-deploy)
         env:
