@@ -1,4 +1,4 @@
-name: GPTHost Build Pipeline (Minimal)
+name: GPTHost Build Pipeline (Worker Upload)
 
 on:
   workflow_dispatch:
@@ -49,18 +49,11 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install tools (jq, awscli)
+      - name: Install tools (jq)
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          # Install jq and unzip from apt
-          sudo apt-get install -y jq unzip
-          # Install AWS CLI v2 from official source if not present
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
-            unzip -q awscliv2.zip
-            sudo ./aws/install --update
-          fi
+          sudo apt-get install -y jq
 
       - name: Prepare workspace
         run: |
@@ -124,102 +117,49 @@ jobs:
           cp -r "projects/${{ inputs.project_id }}/dist/." "artifacts/${{ inputs.project_id }}/"
           test -f "artifacts/${{ inputs.project_id }}/index.html"
 
-      - name: Setup Python and boto3
+      - name: Create tarball of build artifacts
         run: |
-          pip install boto3
-      
-      - name: Upload dist to R2 (boto3)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
-          PROJECT_ID: ${{ inputs.project_id }}
-        run: |
-          python3 << 'EOF'
-          import os
-          import sys
-          import boto3
-          from pathlib import Path
-          
-          # Get environment variables
-          account_id = os.environ.get('CF_ACCOUNT_ID')
-          access_key = os.environ.get('AWS_ACCESS_KEY_ID')
-          secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
-          bucket_name = os.environ.get('R2_BUCKET')
-          project_id = os.environ.get('PROJECT_ID')
-          
-          if not all([account_id, access_key, secret_key, bucket_name, project_id]):
-              print("Error: Missing required environment variables")
-              sys.exit(1)
-          
-          # Create S3 client for R2
-          print("Connecting to R2...")
-          s3_client = boto3.client(
-              's3',
-              endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
-              aws_access_key_id=access_key,
-              aws_secret_access_key=secret_key,
-              region_name='us-east-1'
-          )
-          
-          # Upload files
-          source_dir = Path(f"artifacts/{project_id}")
-          dest_prefix = f"builds/{project_id}/dist/"
-          
-          print(f"Uploading from {source_dir} to {bucket_name}/{dest_prefix}")
-          
-          try:
-              uploaded = 0
-              for file_path in source_dir.rglob('*'):
-                  if file_path.is_file():
-                      relative_path = file_path.relative_to(source_dir)
-                      s3_key = f"{dest_prefix}{relative_path}"
-                      
-                      print(f"  Uploading {relative_path}...")
-                      s3_client.upload_file(
-                          str(file_path),
-                          bucket_name,
-                          s3_key
-                      )
-                      uploaded += 1
-              
-              print(f"Successfully uploaded {uploaded} files")
-              
-              # Verify by listing
-              print("Verifying upload...")
-              response = s3_client.list_objects_v2(
-                  Bucket=bucket_name,
-                  Prefix=dest_prefix,
-                  MaxKeys=5
-              )
-              
-              if 'Contents' in response:
-                  for obj in response['Contents']:
-                      print(f"  ✓ {obj['Key']}")
-              
-          except Exception as e:
-              print(f"Upload error: {e}")
-              sys.exit(1)
-          EOF
+          set -euo pipefail
+          echo "Creating tarball of build artifacts..."
+          tar -czf "build-${{ inputs.project_id }}.tar.gz" -C artifacts "${{ inputs.project_id }}"
+          ls -lh "build-${{ inputs.project_id }}.tar.gz"
+          echo "ARTIFACT_SIZE=$(stat -c%s "build-${{ inputs.project_id }}.tar.gz")" >> $GITHUB_ENV
 
-      - name: Success callback (auto-deploy)
+      - name: Upload artifacts to GitHub (for backup)
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-${{ inputs.project_id }}
+          path: artifacts/${{ inputs.project_id }}/
+          retention-days: 1
+
+      - name: Send build artifacts to Worker for R2 upload
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
         run: |
           set -euo pipefail
-          BODY=$(jq -n \
-            --arg status "success" \
-            --arg pid "${{ inputs.project_id }}" \
-            --arg rid "${{ github.run_id }}" \
-            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --arg r2_path "builds/${{ inputs.project_id }}/dist/" \
-            '{status:$status, project_id:$pid, github_run_id:$rid, github_run_url:$run_url, r2_build_path:$r2_path}')
-          curl -sS -X POST "$CALLBACK_URL" \
-            -H "Content-Type: application/json" \
+          echo "Sending build artifacts to Worker for R2 upload..."
+          
+          # Create the tar.gz in memory and send directly
+          tar -czf - -C artifacts "${{ inputs.project_id }}" | \
+          curl -sS -X POST "$CALLBACK_URL/upload" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
-            -d "$BODY"
+            -H "X-Project-ID: ${{ inputs.project_id }}" \
+            -H "X-GitHub-Run-ID: ${{ github.run_id }}" \
+            -H "X-GitHub-Run-URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -H "Content-Type: application/tar+gzip" \
+            --data-binary @- \
+            -o response.json
+          
+          # Check response
+          if jq -e '.success' response.json > /dev/null; then
+            echo "✅ Build artifacts successfully sent to Worker"
+            jq . response.json
+          else
+            echo "❌ Failed to send artifacts to Worker"
+            jq . response.json
+            exit 1
+          fi
 
       - name: Failure callback
         if: failure()
