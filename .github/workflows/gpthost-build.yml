@@ -139,25 +139,39 @@ jobs:
           ENDPOINT="https://${ACCOUNT_ID_CLEAN}.r2.cloudflarestorage.com"
           export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-          export AWS_DEFAULT_REGION="auto"
+          export AWS_DEFAULT_REGION="us-east-1"
           export AWS_S3_FORCE_PATH_STYLE="true"
           export AWS_ENDPOINT_URL_S3="$ENDPOINT"
           export AWS_ENDPOINT_URL="$ENDPOINT"
-          export AWS_REGION="auto"
+          export AWS_REGION="us-east-1"
           aws --version || true
           echo "Using endpoint: $ENDPOINT"
           echo "Target bucket: $BUCKET_CLEAN"
-          # Quick connectivity check with fallback region if endpoint parsing fails
-          echo "Checking connectivity to bucket..."
-          if ! aws s3 ls "s3://$BUCKET_CLEAN/" --region "$AWS_REGION" >/dev/null 2>err.log; then
-            if grep -qi "Invalid endpoint" err.log; then
-              echo "Encountered endpoint error; retrying with AWS_REGION=us-east-1"
-              export AWS_REGION="us-east-1"; export AWS_DEFAULT_REGION="us-east-1"
-              aws s3 ls "s3://$BUCKET_CLEAN/" --region "$AWS_REGION" >/dev/null 2>&1 || true
+          # Configure AWS CLI S3 client explicitly for R2 (config-layer)
+          aws configure set default.s3.endpoint_url "$ENDPOINT"
+          aws configure set default.s3.addressing_style path
+          aws configure set default.region "$AWS_REGION"
+
+          echo "Uploading files via s3api put-object..."
+          DEST_PREFIX="builds/${{ inputs.project_id }}/dist/"
+          # Find all files and upload individually using s3api (more reliable for custom endpoints)
+          while IFS= read -r -d '' file; do
+            key="${DEST_PREFIX}${file#./}"
+            # Determine content type (best effort)
+            ct="application/octet-stream"
+            if command -v file >/dev/null 2>&1; then
+              mt=$(file -b --mime-type "$file" || true)
+              [ -n "${mt:-}" ] && ct="$mt"
             fi
-          fi
-          DEST="s3://$BUCKET_CLEAN/builds/${{ inputs.project_id }}/dist/"
-          aws s3 sync . "$DEST" --region "$AWS_REGION" --no-progress
+            echo "Uploading $file -> s3://$BUCKET_CLEAN/$key ($ct)"
+            aws s3api put-object \
+              --bucket "$BUCKET_CLEAN" \
+              --key "$key" \
+              --body "$file" \
+              --content-type "$ct" \
+              --endpoint-url "$ENDPOINT" \
+              --region "$AWS_REGION" >/dev/null
+          done < <(find . -type f -print0)
 
       - name: Success callback (auto-deploy)
         env:
