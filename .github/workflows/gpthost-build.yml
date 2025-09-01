@@ -128,7 +128,7 @@ jobs:
         run: |
           pip install boto3
       
-      - name: Upload dist to R2 (Python)
+      - name: Upload dist to R2 (boto3)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -136,11 +136,11 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
           PROJECT_ID: ${{ inputs.project_id }}
         run: |
-          cat > upload-to-r2.py << 'EOF'
-          #!/usr/bin/env python3
+          python3 << 'EOF'
           import os
           import sys
-          import subprocess
+          import boto3
+          from pathlib import Path
           
           # Get environment variables
           account_id = os.environ.get('CF_ACCOUNT_ID')
@@ -153,33 +153,55 @@ jobs:
               print("Error: Missing required environment variables")
               sys.exit(1)
           
-          # Construct endpoint URL
-          endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+          # Create S3 client for R2
+          print("Connecting to R2...")
+          s3_client = boto3.client(
+              's3',
+              endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+              aws_access_key_id=access_key,
+              aws_secret_access_key=secret_key,
+              region_name='us-east-1'
+          )
           
-          # Use AWS CLI with constructed endpoint
-          source_path = f"artifacts/{project_id}/"
-          dest_path = f"s3://{bucket_name}/builds/{project_id}/dist/"
+          # Upload files
+          source_dir = Path(f"artifacts/{project_id}")
+          dest_prefix = f"builds/{project_id}/dist/"
           
-          print(f"Uploading to R2...")
-          print(f"Source: {source_path}")
-          print(f"Destination: {dest_path}")
+          print(f"Uploading from {source_dir} to {bucket_name}/{dest_prefix}")
           
-          cmd = [
-              "aws", "s3", "cp", source_path, dest_path,
-              "--recursive",
-              "--endpoint-url", endpoint_url,
-              "--no-progress"
-          ]
-          
-          result = subprocess.run(cmd, capture_output=False, text=True)
-          if result.returncode != 0:
-              print(f"Upload failed with code {result.returncode}")
+          try:
+              uploaded = 0
+              for file_path in source_dir.rglob('*'):
+                  if file_path.is_file():
+                      relative_path = file_path.relative_to(source_dir)
+                      s3_key = f"{dest_prefix}{relative_path}"
+                      
+                      print(f"  Uploading {relative_path}...")
+                      s3_client.upload_file(
+                          str(file_path),
+                          bucket_name,
+                          s3_key
+                      )
+                      uploaded += 1
+              
+              print(f"Successfully uploaded {uploaded} files")
+              
+              # Verify by listing
+              print("Verifying upload...")
+              response = s3_client.list_objects_v2(
+                  Bucket=bucket_name,
+                  Prefix=dest_prefix,
+                  MaxKeys=5
+              )
+              
+              if 'Contents' in response:
+                  for obj in response['Contents']:
+                      print(f"  ✓ {obj['Key']}")
+              
+          except Exception as e:
+              print(f"Upload error: {e}")
               sys.exit(1)
-          
-          print("Upload completed successfully")
           EOF
-          
-          python3 upload-to-r2.py
 
       - name: Success callback (auto-deploy)
         env:
