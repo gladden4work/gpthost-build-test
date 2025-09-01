@@ -129,26 +129,27 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
-          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
         run: |
           set -euo pipefail
           echo "Uploading to R2 using AWS CLI..."
-          echo "Bucket: ${{ secrets.R2_BUCKET_NAME }}"
-          echo "Path: builds/${{ inputs.project_id }}/dist/"
+          echo "Destination: builds/${{ inputs.project_id }}/dist/"
           
-          # Upload files to R2
+          # Upload files to R2 - construct endpoint inline
           aws s3 cp \
             "artifacts/${{ inputs.project_id }}/" \
-            "s3://${{ secrets.R2_BUCKET_NAME }}/builds/${{ inputs.project_id }}/dist/" \
+            "s3://${R2_BUCKET}/builds/${{ inputs.project_id }}/dist/" \
             --recursive \
-            --endpoint-url "${R2_ENDPOINT}" \
+            --endpoint-url "https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --no-progress
           
           # Verify upload
           echo "Verifying upload..."
-          aws s3 ls "s3://${{ secrets.R2_BUCKET_NAME }}/builds/${{ inputs.project_id }}/dist/" \
-            --endpoint-url "${R2_ENDPOINT}" \
-            --recursive
+          aws s3 ls \
+            "s3://${R2_BUCKET}/builds/${{ inputs.project_id }}/dist/" \
+            --endpoint-url "https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --recursive | head -5
           
           echo "Upload completed successfully"
 
