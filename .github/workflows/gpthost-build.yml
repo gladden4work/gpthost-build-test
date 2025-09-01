@@ -53,7 +53,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y jq awscli
+          # Install jq and unzip from apt
+          sudo apt-get install -y jq unzip
+          # Install AWS CLI v2 from official source if not present
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+            unzip -q awscliv2.zip
+            sudo ./aws/install --update
+          fi
 
       - name: Prepare workspace
         run: |
