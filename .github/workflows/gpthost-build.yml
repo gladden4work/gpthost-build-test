@@ -124,34 +124,62 @@ jobs:
           cp -r "projects/${{ inputs.project_id }}/dist/." "artifacts/${{ inputs.project_id }}/"
           test -f "artifacts/${{ inputs.project_id }}/index.html"
 
-      - name: Upload dist to R2 (AWS CLI)
+      - name: Setup Python and boto3
+        run: |
+          pip install boto3
+      
+      - name: Upload dist to R2 (Python)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: us-east-1
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          PROJECT_ID: ${{ inputs.project_id }}
         run: |
-          set -euo pipefail
-          echo "Uploading to R2 using AWS CLI..."
-          echo "Destination: builds/${{ inputs.project_id }}/dist/"
+          cat > upload-to-r2.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          import subprocess
           
-          # Upload files to R2 - construct endpoint inline
-          aws s3 cp \
-            "artifacts/${{ inputs.project_id }}/" \
-            "s3://${R2_BUCKET}/builds/${{ inputs.project_id }}/dist/" \
-            --recursive \
-            --endpoint-url "https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --no-progress
+          # Get environment variables
+          account_id = os.environ.get('CF_ACCOUNT_ID')
+          access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+          secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+          bucket_name = os.environ.get('R2_BUCKET')
+          project_id = os.environ.get('PROJECT_ID')
           
-          # Verify upload
-          echo "Verifying upload..."
-          aws s3 ls \
-            "s3://${R2_BUCKET}/builds/${{ inputs.project_id }}/dist/" \
-            --endpoint-url "https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --recursive | head -5
+          if not all([account_id, access_key, secret_key, bucket_name, project_id]):
+              print("Error: Missing required environment variables")
+              sys.exit(1)
           
-          echo "Upload completed successfully"
+          # Construct endpoint URL
+          endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+          
+          # Use AWS CLI with constructed endpoint
+          source_path = f"artifacts/{project_id}/"
+          dest_path = f"s3://{bucket_name}/builds/{project_id}/dist/"
+          
+          print(f"Uploading to R2...")
+          print(f"Source: {source_path}")
+          print(f"Destination: {dest_path}")
+          
+          cmd = [
+              "aws", "s3", "cp", source_path, dest_path,
+              "--recursive",
+              "--endpoint-url", endpoint_url,
+              "--no-progress"
+          ]
+          
+          result = subprocess.run(cmd, capture_output=False, text=True)
+          if result.returncode != 0:
+              print(f"Upload failed with code {result.returncode}")
+              sys.exit(1)
+          
+          print("Upload completed successfully")
+          EOF
+          
+          python3 upload-to-r2.py
 
       - name: Success callback (auto-deploy)
         env:
