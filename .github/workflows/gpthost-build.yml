@@ -1,4 +1,6 @@
 name: GPTHost Build Pipeline (Worker Upload)
+# This workflow builds projects and sends artifacts to Worker for R2 upload
+# GitHub Actions cannot upload to R2 directly due to secret masking of account IDs
 
 on:
   workflow_dispatch:
@@ -126,7 +128,7 @@ jobs:
           echo "ARTIFACT_SIZE=$(stat -c%s "build-${{ inputs.project_id }}.tar.gz")" >> $GITHUB_ENV
 
       - name: Upload artifacts to GitHub (for backup)
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-${{ inputs.project_id }}
           path: artifacts/${{ inputs.project_id }}/
@@ -139,21 +141,25 @@ jobs:
         run: |
           set -euo pipefail
           echo "Sending build artifacts to Worker for R2 upload..."
+          echo "This bypasses GitHub's secret masking by handling R2 upload in Worker"
           
-          # Create the tar.gz in memory and send directly
+          # Create the tar.gz in memory and send directly to Worker
+          # Worker will handle R2 upload using its environment bindings
           tar -czf - -C artifacts "${{ inputs.project_id }}" | \
           curl -sS -X POST "$CALLBACK_URL/upload" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
             -H "X-Project-ID: ${{ inputs.project_id }}" \
             -H "X-GitHub-Run-ID: ${{ github.run_id }}" \
             -H "X-GitHub-Run-URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -H "X-Correlation-ID: ${{ inputs.correlation_id }}" \
             -H "Content-Type: application/tar+gzip" \
             --data-binary @- \
             -o response.json
           
-          # Check response
+          # Check response from Worker
           if jq -e '.success' response.json > /dev/null; then
             echo "✅ Build artifacts successfully sent to Worker"
+            echo "Worker will now handle R2 upload with native bindings"
             jq . response.json
           else
             echo "❌ Failed to send artifacts to Worker"
