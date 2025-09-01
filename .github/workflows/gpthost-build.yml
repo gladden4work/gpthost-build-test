@@ -142,13 +142,22 @@ jobs:
           export AWS_DEFAULT_REGION="auto"
           export AWS_S3_FORCE_PATH_STYLE="true"
           export AWS_ENDPOINT_URL_S3="$ENDPOINT"
+          export AWS_ENDPOINT_URL="$ENDPOINT"
+          export AWS_REGION="auto"
           aws --version || true
           echo "Using endpoint: $ENDPOINT"
           echo "Target bucket: $BUCKET_CLEAN"
-          # Quick connectivity check (non-fatal if bucket is empty)
-          aws s3 ls "s3://$BUCKET_CLEAN/" --region auto >/dev/null 2>&1 || true
+          # Quick connectivity check with fallback region if endpoint parsing fails
+          echo "Checking connectivity to bucket..."
+          if ! aws s3 ls "s3://$BUCKET_CLEAN/" --region "$AWS_REGION" >/dev/null 2>err.log; then
+            if grep -qi "Invalid endpoint" err.log; then
+              echo "Encountered endpoint error; retrying with AWS_REGION=us-east-1"
+              export AWS_REGION="us-east-1"; export AWS_DEFAULT_REGION="us-east-1"
+              aws s3 ls "s3://$BUCKET_CLEAN/" --region "$AWS_REGION" >/dev/null 2>&1 || true
+            fi
+          fi
           DEST="s3://$BUCKET_CLEAN/builds/${{ inputs.project_id }}/dist/"
-          aws s3 sync . "$DEST" --region auto --no-progress
+          aws s3 sync . "$DEST" --region "$AWS_REGION" --no-progress
 
       - name: Success callback (auto-deploy)
         env:
