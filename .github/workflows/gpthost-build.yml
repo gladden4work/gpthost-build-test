@@ -129,20 +129,26 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
+          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
           set -euo pipefail
           echo "Uploading to R2 using AWS CLI..."
-          
-          # Configure endpoint URL for Cloudflare R2
-          ENDPOINT_URL="https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          echo "Bucket: ${{ secrets.R2_BUCKET_NAME }}"
+          echo "Path: builds/${{ inputs.project_id }}/dist/"
           
           # Upload files to R2
           aws s3 cp \
             "artifacts/${{ inputs.project_id }}/" \
             "s3://${{ secrets.R2_BUCKET_NAME }}/builds/${{ inputs.project_id }}/dist/" \
             --recursive \
-            --endpoint-url "$ENDPOINT_URL" \
+            --endpoint-url "${R2_ENDPOINT}" \
             --no-progress
+          
+          # Verify upload
+          echo "Verifying upload..."
+          aws s3 ls "s3://${{ secrets.R2_BUCKET_NAME }}/builds/${{ inputs.project_id }}/dist/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --recursive
           
           echo "Upload completed successfully"
 
