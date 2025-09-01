@@ -127,15 +127,12 @@ jobs:
       - name: Upload dist to R2
         uses: ryand56/r2-upload-action@v1
         with:
-          r2_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          endpoint: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          accessKeyId: ${{ secrets.R2_ACCESS_KEY_ID }}
-          secretAccessKey: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          bucket: ${{ secrets.R2_BUCKET_NAME }}
-          source: artifacts/${{ inputs.project_id }}/
-          destination: builds/${{ inputs.project_id }}/dist/
-          pathStyle: true
-          region: us-east-1
+          r2-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET_NAME }}
+          source-dir: artifacts/${{ inputs.project_id }}/
+          destination-dir: builds/${{ inputs.project_id }}/dist/
 
       - name: Success callback (auto-deploy)
         env:
