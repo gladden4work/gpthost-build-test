@@ -146,9 +146,9 @@ jobs:
           echo "Using endpoint: $ENDPOINT"
           echo "Target bucket: $BUCKET_CLEAN"
           # Quick connectivity check (non-fatal if bucket is empty)
-          aws s3 ls "s3://$BUCKET_CLEAN/" --endpoint-url "$ENDPOINT" --region auto >/dev/null 2>&1 || true
+          aws s3 ls "s3://$BUCKET_CLEAN/" --region auto >/dev/null 2>&1 || true
           DEST="s3://$BUCKET_CLEAN/builds/${{ inputs.project_id }}/dist/"
-          aws s3 sync . "$DEST" --endpoint-url "$ENDPOINT" --region auto --no-progress
+          aws s3 sync . "$DEST" --region auto --no-progress
 
       - name: Success callback (auto-deploy)
         env:
