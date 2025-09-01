@@ -22,9 +22,10 @@ on:
         required: true
         type: string
       framework:
-        description: react|vue|svelte|plain (optional)
+        description: Framework type (react|vue|svelte|auto)
         required: false
         type: string
+        default: 'auto'
       build_command:
         description: Custom build command (optional, ignored by minimal flow)
         required: false
@@ -41,6 +42,13 @@ on:
 permissions:
   contents: read
 
+env:
+  NODE_VERSION: '20'
+  PROJECT_ID: ${{ inputs.project_id }}
+  FRAMEWORK: ${{ inputs.framework }}
+  CALLBACK_URL: ${{ inputs.callback_url }}
+  CALLBACK_TOKEN: ${{ inputs.callback_token }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -50,6 +58,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Install tools (jq)
         run: |
@@ -102,16 +117,70 @@ jobs:
               '</html>' > index.html
           fi
 
-      - name: Minimal static build to dist/
+      - name: Scaffold framework application
         working-directory: projects/${{ inputs.project_id }}
         run: |
           set -euo pipefail
-          rm -rf dist
-          mkdir -p dist
-          cp -f index.html dist/index.html
-          if [ -d public ]; then cp -r public/. dist/; fi
-          if [ -d src ]; then mkdir -p dist/src && cp -r src/. dist/src/; fi
+          echo "Scaffolding framework application..."
+          node ../../.github/scripts/scaffold.js
+          echo "Scaffolding complete"
+          
+          # Show the resulting structure
+          echo "Project structure:"
+          ls -la
+          if [ -d "src" ]; then
+            echo "Source directory:"
+            ls -la src/
+          fi
+          
+          echo "Package.json contents:"
+          cat package.json 2>/dev/null || echo "No package.json"
+
+      - name: Build project
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Building project..."
+          echo "Framework: ${FRAMEWORK:-auto}"
+          
+          # Check if this is a framework project with package.json
+          if [ -f "package.json" ] && grep -q '"build"' package.json; then
+            echo "Installing dependencies..."
+            if [ -f "package-lock.json" ]; then
+              npm ci --no-audit --no-fund
+            else
+              npm install --no-audit --no-fund
+            fi
+            
+            echo "Running build..."
+            npm run build
+            
+            # Verify build output
+            if [ ! -d "dist" ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
+              echo "ERROR: No build output found in dist/"
+              exit 1
+            fi
+            
+            # Check for relative paths
+            if [ -f "dist/index.html" ]; then
+              if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
+                echo "WARNING: Found absolute paths in index.html"
+              else
+                echo "✓ Paths are relative"
+              fi
+            fi
+          else
+            echo "No framework detected, using static build..."
+            rm -rf dist
+            mkdir -p dist
+            cp -f index.html dist/index.html
+            if [ -d public ]; then cp -r public/. dist/; fi
+            if [ -d src ]; then mkdir -p dist/src && cp -r src/. dist/src/; fi
+          fi
+          
           test -f dist/index.html
+          echo "Build output:"
+          ls -la dist/
 
       - name: Prepare artifacts
         run: |
@@ -152,6 +221,7 @@ jobs:
             -H "X-GitHub-Run-ID: ${{ github.run_id }}" \
             -H "X-GitHub-Run-URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -H "X-Correlation-ID: ${{ inputs.correlation_id }}" \
+            -H "X-Framework: ${FRAMEWORK:-auto}" \
             -H "Content-Type: application/tar+gzip" \
             --data-binary @- \
             -o response.json
@@ -179,7 +249,8 @@ jobs:
             --arg pid "${{ inputs.project_id }}" \
             --arg rid "${{ github.run_id }}" \
             --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            '{status:$status, project_id:$pid, github_run_id:$rid, github_run_url:$run_url}')
+            --arg framework "${FRAMEWORK:-auto}" \
+            '{status:$status, project_id:$pid, framework:$framework, github_run_id:$rid, github_run_url:$run_url}')
           curl -sS -X POST "$CALLBACK_URL" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
