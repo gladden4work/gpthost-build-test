@@ -93,6 +93,8 @@ jobs:
               *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
             esac
             case "$key" in
+              package.json|vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|tsconfig.json|tsconfig.node.json)
+                target="$key" ;;
               public/*|src/*|index.html) target="$key" ;;
               *) target="src/$key" ;;
             esac
@@ -133,6 +135,33 @@ jobs:
           
           echo "Package.json contents:"
           cat package.json 2>/dev/null || echo "No package.json"
+
+      - name: Honor root package.json and merge build_config
+        working-directory: projects/${{ inputs.project_id }}
+        env:
+          BUILD_CONFIG: ${{ inputs.build_config }}
+        run: |
+          set -euo pipefail
+          # Merge optional build_config (package.json-like) into root package.json if provided
+          if [ -n "${BUILD_CONFIG:-}" ] && echo "$BUILD_CONFIG" | jq -e . >/dev/null 2>&1; then
+            echo "$BUILD_CONFIG" > build_config.raw.json
+            jq . build_config.raw.json > build_config.json
+            if [ ! -f package.json ]; then echo '{}' > package.json; fi
+            jq -s '
+              def md($a;$b): ($a//{}) as $A | ($b//{}) as $B | $A + $B;
+              .[0] as $pkg | .[1] as $cfg |
+              $pkg
+              | .dependencies = md($pkg.dependencies; $cfg.dependencies)
+              | .devDependencies = md($pkg.devDependencies; $cfg.devDependencies)
+              | .peerDependencies = md($pkg.peerDependencies; $cfg.peerDependencies)
+              | .scripts = md($pkg.scripts; $cfg.scripts)
+            ' package.json build_config.json > package.merged.json
+            mv package.merged.json package.json
+            echo "Merged build_config into package.json"
+            echo "Resulting package.json:"; cat package.json
+          else
+            echo "No valid build_config provided; skipping merge."
+          fi
 
       - name: Build project
         working-directory: projects/${{ inputs.project_id }}
