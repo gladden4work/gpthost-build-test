@@ -84,38 +84,38 @@ jobs:
         run: |
           set -euo pipefail
           echo "$SOURCE_FILES" > source.json
-          jq -e . source.json >/dev/null
-          jq -r 'to_entries[] | @base64' source.json | while read -r row; do
-            key=$(echo "$row" | base64 --decode | jq -r '.key')
-            content=$(echo "$row" | base64 --decode | jq -r '.value')
-            key="${key#./}"
-            case "$key" in
-              *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
-            esac
-            case "$key" in
-              package.json|vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|tsconfig.json|tsconfig.node.json)
+           jq -e . source.json >/dev/null
+           jq -r 'to_entries[] | @base64' source.json | while read -r row; do
+              key=$(echo "$row" | base64 --decode | jq -r '.key')
+              content=$(echo "$row" | base64 --decode | jq -r '.value')
+              key="${key#./}"
+              case "$key" in
+                *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
+              esac
+              case "$key" in
+                package.json|vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|tsconfig.json|tsconfig.node.json)
                 target="$key" ;;
-              public/*|src/*|index.html) target="$key" ;;
-              *) target="src/$key" ;;
-            esac
-            mkdir -p "$(dirname "$target")"
-            printf "%s" "$content" > "$target"
-            echo "Created: $target"
-          done
-          if [ ! -f index.html ]; then
-            printf '%s\n' \
-              '<!DOCTYPE html>' \
-              '<html lang="en">' \
-              '  <head>' \
-              '    <meta charset="UTF-8" />' \
-              '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
-              '    <title>GPTHost Minimal</title>' \
-              '  </head>' \
-              '  <body>' \
-              '    <div id="root">GPTHost Minimal Build</div>' \
-              '  </body>' \
-              '</html>' > index.html
-          fi
+               public/*|src/*|index.html*) target="$key" ;;
+               *) target="src/$key" ;;
+              esac
+              mkdir -p "$(dirname "$target")"
+              printf "%s" "$content" > "$target"
+              echo "Created: $target"
+            done
+            if [ ! -f index.html ]; then
+              printf '%s\n' \
+                '<!DOCTYPE html>' \
+                '<html lang="en">' \
+                '  <head>' \
+                '    <meta charset="UTF-8" />' \
+                '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
+                '    <title>GPTHost Minimal</title>' \
+                '  </head>' \
+                '  <body>' \
+                '    <div id="root">GPTHost Minimal Build</div>' \
+                '  </body>' \
+                '</html>' > index.html
+            fi
 
       - name: Scaffold framework application
         working-directory: projects/${{ inputs.project_id }}
@@ -263,6 +263,33 @@ jobs:
             jq . response.json
             exit 1
           fi
+
+      - name: Success callback
+        if: success()
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -euo pipefail
+          echo "Sending success callback to Worker..."
+          BODY=$(jq -n \
+            --arg status "success" \
+            --arg pid "${{ inputs.project_id }}" \
+            --arg rid "${{ github.run_id }}" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg framework "${FRAMEWORK:-auto}" \
+            --arg r2_path "builds/${{ inputs.project_id }}/dist/" \
+            '{status:$status, project_id:$pid, framework:$framework, github_run_id:$rid, github_run_url:$run_url, r2_build_path:$r2_path}')
+          
+          curl -sS -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -d "$BODY" \
+            -o callback_response.json
+          
+          echo "✅ Success callback sent to Worker"
+          echo "Callback response:"
+          jq . callback_response.json 2>/dev/null || cat callback_response.json
 
       - name: Failure callback
         if: failure()
