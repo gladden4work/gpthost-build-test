@@ -84,38 +84,38 @@ jobs:
         run: |
           set -euo pipefail
           echo "$SOURCE_FILES" > source.json
-           jq -e . source.json >/dev/null
-           jq -r 'to_entries[] | @base64' source.json | while read -r row; do
-              key=$(echo "$row" | base64 --decode | jq -r '.key')
-              content=$(echo "$row" | base64 --decode | jq -r '.value')
-              key="${key#./}"
-              case "$key" in
-                *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
-              esac
-              case "$key" in
-                package.json|vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|tsconfig.json|tsconfig.node.json)
+          jq -e . source.json >/dev/null
+          jq -r 'to_entries[] | @base64' source.json | while read -r row; do
+            key=$(echo "$row" | base64 --decode | jq -r '.key')
+            content=$(echo "$row" | base64 --decode | jq -r '.value')
+            key="${key#./}"
+            case "$key" in
+              *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
+            esac
+            case "$key" in
+              package.json|vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|tsconfig.json|tsconfig.node.json)
                 target="$key" ;;
-               public/*|src/*|index.html*) target="$key" ;;
-               *) target="src/$key" ;;
-              esac
-              mkdir -p "$(dirname "$target")"
-              printf "%s" "$content" > "$target"
-              echo "Created: $target"
-            done
-            if [ ! -f index.html ]; then
-              printf '%s\n' \
-                '<!DOCTYPE html>' \
-                '<html lang="en">' \
-                '  <head>' \
-                '    <meta charset="UTF-8" />' \
-                '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
-                '    <title>GPTHost Minimal</title>' \
-                '  </head>' \
-                '  <body>' \
-                '    <div id="root">GPTHost Minimal Build</div>' \
-                '  </body>' \
-                '</html>' > index.html
-            fi
+              public/*|src/*|index.html) target="$key" ;;
+              *) target="src/$key" ;;
+            esac
+            mkdir -p "$(dirname "$target")"
+            printf "%s" "$content" > "$target"
+            echo "Created: $target"
+          done
+          if [ ! -f index.html ]; then
+            printf '%s\n' \
+              '<!DOCTYPE html>' \
+              '<html lang="en">' \
+              '  <head>' \
+              '    <meta charset="UTF-8" />' \
+              '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
+              '    <title>GPTHost Minimal</title>' \
+              '  </head>' \
+              '  <body>' \
+              '    <div id="root">GPTHost Minimal Build</div>' \
+              '  </body>' \
+              '</html>' > index.html
+          fi
 
       - name: Scaffold framework application
         working-directory: projects/${{ inputs.project_id }}
@@ -258,6 +258,14 @@ jobs:
             echo "✅ Build artifacts successfully sent to Worker"
             echo "Worker will now handle R2 upload with native bindings"
             jq . response.json
+            # Capture R2 path from response for accurate success callback
+            R2_PATH=$(jq -r '.r2_path // .data.r2_path // empty' response.json)
+            if [ -n "${R2_PATH}" ]; then
+              echo "R2_PATH=${R2_PATH}" >> $GITHUB_ENV
+              echo "Detected R2 path from upload response: ${R2_PATH}"
+            else
+              echo "WARNING: R2 path not found in upload response; will fall back to builds/${{ inputs.project_id }}/dist/"
+            fi
           else
             echo "❌ Failed to send artifacts to Worker"
             jq . response.json
@@ -272,13 +280,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "Sending success callback to Worker..."
+          # Prefer R2 path returned by upload step; fallback to legacy dist path
+          R2_PATH_VALUE=${R2_PATH:-}
+          if [ -z "${R2_PATH_VALUE}" ]; then
+            R2_PATH_VALUE="builds/${{ inputs.project_id }}/dist/"
+          fi
           BODY=$(jq -n \
             --arg status "success" \
             --arg pid "${{ inputs.project_id }}" \
             --arg rid "${{ github.run_id }}" \
             --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --arg framework "${FRAMEWORK:-auto}" \
-            --arg r2_path "builds/${{ inputs.project_id }}/dist/" \
+            --arg r2_path "${R2_PATH_VALUE}" \
             '{status:$status, project_id:$pid, framework:$framework, github_run_id:$rid, github_run_url:$run_url, r2_build_path:$r2_path}')
           
           curl -sS -X POST "$CALLBACK_URL" \
