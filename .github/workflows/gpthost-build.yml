@@ -1,6 +1,4 @@
-name: GPTHost Build Pipeline (Worker Upload)
-# This workflow builds projects and sends artifacts to Worker for R2 upload
-# GitHub Actions cannot upload to R2 directly due to secret masking of account IDs
+name: GPTHost Build Pipeline (Debug)
 
 on:
   workflow_dispatch:
@@ -22,10 +20,9 @@ on:
         required: true
         type: string
       framework:
-        description: Framework type (react|vue|svelte|auto)
+        description: react|vue|svelte|plain (optional)
         required: false
         type: string
-        default: 'auto'
       build_command:
         description: Custom build command (optional, ignored by minimal flow)
         required: false
@@ -42,13 +39,6 @@ on:
 permissions:
   contents: read
 
-env:
-  NODE_VERSION: '20'
-  PROJECT_ID: ${{ inputs.project_id }}
-  FRAMEWORK: ${{ inputs.framework }}
-  CALLBACK_URL: ${{ inputs.callback_url }}
-  CALLBACK_TOKEN: ${{ inputs.callback_token }}
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -59,16 +49,33 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+      - name: Debug - Check Secrets
+        run: |
+          echo "=== Checking Secret Configuration ==="
+          echo "CLOUDFLARE_ACCOUNT_ID is set: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}"
+          echo "R2_ACCESS_KEY_ID is set: ${{ secrets.R2_ACCESS_KEY_ID != '' }}"
+          echo "R2_SECRET_ACCESS_KEY is set: ${{ secrets.R2_SECRET_ACCESS_KEY != '' }}"
+          echo "R2_BUCKET_NAME is set: ${{ secrets.R2_BUCKET_NAME != '' }}"
+          
+          # Show first 8 chars of non-sensitive IDs for debugging
+          if [ -n "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "Account ID starts with: ${CLOUDFLARE_ACCOUNT_ID:0:8}..."
+          fi
+          if [ -n "${{ secrets.R2_BUCKET_NAME }}" ]; then
+            echo "Bucket name: ${{ secrets.R2_BUCKET_NAME }}"
+          fi
 
-      - name: Install tools (jq)
+      - name: Install tools (jq, awscli)
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq unzip
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+            unzip -q awscliv2.zip
+            sudo ./aws/install --update
+          fi
+          aws --version
 
       - name: Prepare workspace
         run: |
@@ -84,129 +91,48 @@ jobs:
         run: |
           set -euo pipefail
           echo "$SOURCE_FILES" > source.json
-           jq -e . source.json >/dev/null
-           jq -r 'to_entries[] | @base64' source.json | while read -r row; do
-              key=$(echo "$row" | base64 --decode | jq -r '.key')
-              content=$(echo "$row" | base64 --decode | jq -r '.value')
-              key="${key#./}"
-              case "$key" in
-                *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
-              esac
-              case "$key" in
-                package.json|vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|tsconfig.json|tsconfig.node.json)
-                target="$key" ;;
-               public/*|src/*|index.html*) target="$key" ;;
-               *) target="src/$key" ;;
-              esac
-              mkdir -p "$(dirname "$target")"
-              printf "%s" "$content" > "$target"
-              echo "Created: $target"
-            done
-            if [ ! -f index.html ]; then
-              printf '%s\n' \
-                '<!DOCTYPE html>' \
-                '<html lang="en">' \
-                '  <head>' \
-                '    <meta charset="UTF-8" />' \
-                '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
-                '    <title>GPTHost Minimal</title>' \
-                '  </head>' \
-                '  <body>' \
-                '    <div id="root">GPTHost Minimal Build</div>' \
-                '  </body>' \
-                '</html>' > index.html
-            fi
+          jq -e . source.json >/dev/null
+          jq -r 'to_entries[] | @base64' source.json | while read -r row; do
+            key=$(echo "$row" | base64 --decode | jq -r '.key')
+            content=$(echo "$row" | base64 --decode | jq -r '.value')
+            key="${key#./}"
+            case "$key" in
+              *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
+            esac
+            case "$key" in
+              public/*|src/*|index.html) target="$key" ;;
+              *) target="src/$key" ;;
+            esac
+            mkdir -p "$(dirname "$target")"
+            printf "%s" "$content" > "$target"
+            echo "Created: $target"
+          done
+          if [ ! -f index.html ]; then
+            printf '%s\n' \
+              '<!DOCTYPE html>' \
+              '<html lang="en">' \
+              '  <head>' \
+              '    <meta charset="UTF-8" />' \
+              '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
+              '    <title>GPTHost Minimal</title>' \
+              '  </head>' \
+              '  <body>' \
+              '    <div id="root">GPTHost Minimal Build</div>' \
+              '  </body>' \
+              '</html>' > index.html
+          fi
 
-      - name: Scaffold framework application
+      - name: Minimal static build to dist/
         working-directory: projects/${{ inputs.project_id }}
         run: |
           set -euo pipefail
-          echo "Scaffolding framework application..."
-          node ../../.github/scripts/scaffold.js
-          echo "Scaffolding complete"
-          
-          # Show the resulting structure
-          echo "Project structure:"
-          ls -la
-          if [ -d "src" ]; then
-            echo "Source directory:"
-            ls -la src/
-          fi
-          
-          echo "Package.json contents:"
-          cat package.json 2>/dev/null || echo "No package.json"
-
-      - name: Honor root package.json and merge build_config
-        working-directory: projects/${{ inputs.project_id }}
-        env:
-          BUILD_CONFIG: ${{ inputs.build_config }}
-        run: |
-          set -euo pipefail
-          # Merge optional build_config (package.json-like) into root package.json if provided
-          if [ -n "${BUILD_CONFIG:-}" ] && echo "$BUILD_CONFIG" | jq -e . >/dev/null 2>&1; then
-            echo "$BUILD_CONFIG" > build_config.raw.json
-            jq . build_config.raw.json > build_config.json
-            if [ ! -f package.json ]; then echo '{}' > package.json; fi
-            jq -s '
-              def md($a;$b): ($a//{}) as $A | ($b//{}) as $B | $A + $B;
-              .[0] as $pkg | .[1] as $cfg |
-              $pkg
-              | .dependencies = md($pkg.dependencies; $cfg.dependencies)
-              | .devDependencies = md($pkg.devDependencies; $cfg.devDependencies)
-              | .peerDependencies = md($pkg.peerDependencies; $cfg.peerDependencies)
-              | .scripts = md($pkg.scripts; $cfg.scripts)
-            ' package.json build_config.json > package.merged.json
-            mv package.merged.json package.json
-            echo "Merged build_config into package.json"
-            echo "Resulting package.json:"; cat package.json
-          else
-            echo "No valid build_config provided; skipping merge."
-          fi
-
-      - name: Build project
-        working-directory: projects/${{ inputs.project_id }}
-        run: |
-          set -euo pipefail
-          echo "Building project..."
-          echo "Framework: ${FRAMEWORK:-auto}"
-          
-          # Check if this is a framework project with package.json
-          if [ -f "package.json" ] && grep -q '"build"' package.json; then
-            echo "Installing dependencies..."
-            if [ -f "package-lock.json" ]; then
-              npm ci --no-audit --no-fund
-            else
-              npm install --no-audit --no-fund
-            fi
-            
-            echo "Running build..."
-            npm run build
-            
-            # Verify build output
-            if [ ! -d "dist" ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
-              echo "ERROR: No build output found in dist/"
-              exit 1
-            fi
-            
-            # Check for relative paths
-            if [ -f "dist/index.html" ]; then
-              if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
-                echo "WARNING: Found absolute paths in index.html"
-              else
-                echo "✓ Paths are relative"
-              fi
-            fi
-          else
-            echo "No framework detected, using static build..."
-            rm -rf dist
-            mkdir -p dist
-            cp -f index.html dist/index.html
-            if [ -d public ]; then cp -r public/. dist/; fi
-            if [ -d src ]; then mkdir -p dist/src && cp -r src/. dist/src/; fi
-          fi
-          
+          rm -rf dist
+          mkdir -p dist
+          cp -f index.html dist/index.html
+          if [ -d public ]; then cp -r public/. dist/; fi
+          if [ -d src ]; then mkdir -p dist/src && cp -r src/. dist/src/; fi
           test -f dist/index.html
-          echo "Build output:"
+          echo "Build complete. Files in dist:"
           ls -la dist/
 
       - name: Prepare artifacts
@@ -214,82 +140,99 @@ jobs:
           set -euo pipefail
           cp -r "projects/${{ inputs.project_id }}/dist/." "artifacts/${{ inputs.project_id }}/"
           test -f "artifacts/${{ inputs.project_id }}/index.html"
+          echo "Artifacts prepared. Files to upload:"
+          ls -la "artifacts/${{ inputs.project_id }}/"
 
-      - name: Create tarball of build artifacts
-        run: |
-          set -euo pipefail
-          echo "Creating tarball of build artifacts..."
-          tar -czf "build-${{ inputs.project_id }}.tar.gz" -C artifacts "${{ inputs.project_id }}"
-          ls -lh "build-${{ inputs.project_id }}.tar.gz"
-          echo "ARTIFACT_SIZE=$(stat -c%s "build-${{ inputs.project_id }}.tar.gz")" >> $GITHUB_ENV
-
-      - name: Upload artifacts to GitHub (for backup)
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-${{ inputs.project_id }}
-          path: artifacts/${{ inputs.project_id }}/
-          retention-days: 1
-
-      - name: Send build artifacts to Worker for R2 upload
+      - name: Test R2 Connection
         env:
-          CALLBACK_URL: ${{ inputs.callback_url }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
-          set -euo pipefail
-          echo "Sending build artifacts to Worker for R2 upload..."
-          echo "This bypasses GitHub's secret masking by handling R2 upload in Worker"
+          set +e  # Don't exit on error for this test
+          echo "=== Testing R2 Connection ==="
+          ENDPOINT="https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"
           
-          # Create the tar.gz in memory and send directly to Worker
-          # Worker will handle R2 upload using its environment bindings
-          tar -czf - -C artifacts "${{ inputs.project_id }}" | \
-          curl -sS -X POST "$CALLBACK_URL/upload" \
-            -H "Authorization: Bearer $CALLBACK_TOKEN" \
-            -H "X-Project-ID: ${{ inputs.project_id }}" \
-            -H "X-GitHub-Run-ID: ${{ github.run_id }}" \
-            -H "X-GitHub-Run-URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            -H "X-Correlation-ID: ${{ inputs.correlation_id }}" \
-            -H "X-Framework: ${FRAMEWORK:-auto}" \
-            -H "Content-Type: application/tar+gzip" \
-            --data-binary @- \
-            -o response.json
+          echo "Testing bucket access..."
+          aws s3 ls "s3://${{ secrets.R2_BUCKET_NAME }}/" \
+            --endpoint-url "$ENDPOINT" \
+            --region us-east-1 \
+            --no-paginate \
+            --max-items 1
           
-          # Check response from Worker
-          if jq -e '.success' response.json > /dev/null; then
-            echo "✅ Build artifacts successfully sent to Worker"
-            echo "Worker will now handle R2 upload with native bindings"
-            jq . response.json
+          if [ $? -eq 0 ]; then
+            echo "✅ R2 connection successful"
           else
-            echo "❌ Failed to send artifacts to Worker"
-            jq . response.json
-            exit 1
+            echo "❌ R2 connection failed. Attempting to list all buckets..."
+            aws s3 ls --endpoint-url "$ENDPOINT" --region us-east-1
           fi
+          set -e
 
-      - name: Success callback
-        if: success()
+      - name: Upload dist to R2 (AWS CLI with debug)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          echo "=== Uploading to R2 ==="
+          ENDPOINT="https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          SOURCE="artifacts/${{ inputs.project_id }}/"
+          DEST="s3://${{ secrets.R2_BUCKET_NAME }}/builds/${{ inputs.project_id }}/dist/"
+          
+          echo "Source: $SOURCE"
+          echo "Destination: $DEST"
+          echo "Endpoint: $ENDPOINT"
+          
+          # Try upload with detailed output
+          aws s3 cp "$SOURCE" "$DEST" \
+            --recursive \
+            --endpoint-url "$ENDPOINT" \
+            --region us-east-1 \
+            --no-progress \
+            --debug 2>&1 | grep -E "(Uploading|Completed|Error|Exception)" || true
+          
+          # Verify upload
+          echo ""
+          echo "Verifying upload..."
+          aws s3 ls "$DEST" \
+            --endpoint-url "$ENDPOINT" \
+            --region us-east-1 \
+            --recursive
+          
+          echo "✅ Upload completed"
+
+      - name: Upload dist to R2 (Action fallback)
+        if: failure()
+        uses: ryand56/r2-upload-action@v1
+        continue-on-error: true
+        with:
+          r2-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET_NAME }}
+          source-dir: artifacts/${{ inputs.project_id }}/
+          destination-dir: builds/${{ inputs.project_id }}/dist/
+
+      - name: Success callback (auto-deploy)
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
         run: |
           set -euo pipefail
-          echo "Sending success callback to Worker..."
           BODY=$(jq -n \
             --arg status "success" \
             --arg pid "${{ inputs.project_id }}" \
             --arg rid "${{ github.run_id }}" \
             --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --arg framework "${FRAMEWORK:-auto}" \
             --arg r2_path "builds/${{ inputs.project_id }}/dist/" \
-            '{status:$status, project_id:$pid, framework:$framework, github_run_id:$rid, github_run_url:$run_url, r2_build_path:$r2_path}')
+            '{status:$status, project_id:$pid, github_run_id:$rid, github_run_url:$run_url, r2_build_path:$r2_path}')
+          
+          echo "Sending callback to: $CALLBACK_URL"
+          echo "Callback body: $BODY"
           
           curl -sS -X POST "$CALLBACK_URL" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
-            -d "$BODY" \
-            -o callback_response.json
-          
-          echo "✅ Success callback sent to Worker"
-          echo "Callback response:"
-          jq . callback_response.json 2>/dev/null || cat callback_response.json
+            -d "$BODY"
 
       - name: Failure callback
         if: failure()
@@ -303,8 +246,9 @@ jobs:
             --arg pid "${{ inputs.project_id }}" \
             --arg rid "${{ github.run_id }}" \
             --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --arg framework "${FRAMEWORK:-auto}" \
-            '{status:$status, project_id:$pid, framework:$framework, github_run_id:$rid, github_run_url:$run_url}')
+            --arg error "Check workflow logs for details" \
+            '{status:$status, project_id:$pid, github_run_id:$rid, github_run_url:$run_url, error:$error}')
+          
           curl -sS -X POST "$CALLBACK_URL" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
