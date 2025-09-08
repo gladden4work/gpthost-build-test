@@ -201,6 +201,12 @@ jobs:
             has_index_css=true
           fi
 
+          # Remove incorrectly placed PostCSS config created by some templates
+          if [ -f src/postcss.config.js ]; then
+            echo "Removing stray src/postcss.config.js (Vite expects root config)"
+            rm -f src/postcss.config.js || true
+          fi
+
           # Detect Tailwind-style utility classes directly in source code.
           # This covers uploads that only contain TSX/JSX files (no CSS yet),
           # like usecase/* components produced by GPTHost.
@@ -337,8 +343,20 @@ jobs:
 
           # Always ensure a valid PostCSS config exists, with optional tailwindcss
           include_tailwind=false
+          tailwind_plugin_name='tailwindcss'
           if jq -e '.devDependencies["tailwindcss"] // .dependencies["tailwindcss"]' package.json >/dev/null 2>&1; then
             include_tailwind=true
+            tv=$(jq -r '.devDependencies["tailwindcss"] // .dependencies["tailwindcss"]' package.json)
+            # If Tailwind v4 is specified, prefer the new @tailwindcss/postcss plugin
+            case "$tv" in
+              4.*|^4*|~4*|>=4*|*x*|*latest*) tailwind_plugin_name='@tailwindcss/postcss' ;;
+              *) tailwind_plugin_name='tailwindcss' ;;
+            esac
+            if [ "$tailwind_plugin_name" = "@tailwindcss/postcss" ]; then
+              if ! jq -e '.devDependencies["@tailwindcss/postcss"] // .dependencies["@tailwindcss/postcss"]' package.json >/dev/null 2>&1; then
+                add_dev_dep @tailwindcss/postcss ^4.0.0
+              fi
+            fi
           fi
 
           cat > postcss.config.js <<'EOF'
@@ -347,14 +365,14 @@ jobs:
               'postcss-import': {},
           EOF
           if $include_tailwind; then
-            printf "    'tailwindcss': {},\n" >> postcss.config.js
+            printf "    '%s': {},\n" "$tailwind_plugin_name" >> postcss.config.js
           fi
           cat >> postcss.config.js <<'EOF'
               'autoprefixer': {}
             }
           }
           EOF
-          echo "Ensured valid postcss.config.js (tailwind: ${include_tailwind})"
+          echo "Ensured valid postcss.config.js (tailwind: ${include_tailwind}, plugin: ${tailwind_plugin_name})"
 
           # Ensure src/index.css exists at minimum to avoid Vite CSS pipeline confusion
           if [ "$has_index_css" = false ]; then
