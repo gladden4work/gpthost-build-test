@@ -191,6 +191,13 @@ jobs:
               npm install --no-audit --no-fund
             fi
             
+            echo "Enforcing relative base for Vite (subpath-safe)..."
+            if [ -f "${{ github.workspace }}/scripts/ensure-relative-base.mjs" ]; then
+              node "${{ github.workspace }}/scripts/ensure-relative-base.mjs"
+            else
+              echo "⚠️ ensure-relative-base.mjs not found, skipping enforcement"
+            fi
+            
             echo "Running build..."
             npm run build
             
@@ -203,14 +210,14 @@ jobs:
             # Check for root-relative paths and rewrite to relative
             if [ -f "dist/index.html" ]; then
               if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
-                echo "Rewriting absolute paths in index.html"
+                echo "⚠️ Found absolute paths in dist/index.html, fixing..."
                 sed -i -e 's#src="/#src="./#g' -e 's#href="/#href="./#g' dist/index.html
                 if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
                   echo "ERROR: Found root-relative URLs in index.html after rewrite"
                   exit 1
                 fi
               else
-                echo "✓ Paths are relative"
+                echo "✅ Paths are already relative"
               fi
             fi
           else

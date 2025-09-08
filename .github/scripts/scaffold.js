@@ -3,6 +3,26 @@
 const fs = require('fs');
 const path = require('path');
 
+// Framework versions constants for easier maintenance
+const FRAMEWORK_VERSIONS = {
+  react: {
+    react: '^18.3.1',
+    'react-dom': '^18.3.1',
+    vite: '^5.0.0',
+    '@vitejs/plugin-react': '^4.3.0'
+  },
+  vue: {
+    vue: '^3.5.0',
+    vite: '^5.0.0',
+    '@vitejs/plugin-vue': '^5.1.0'
+  },
+  svelte: {
+    svelte: '^4.2.0',  // Using stable Svelte 4 instead of Svelte 5
+    vite: '^5.0.0',
+    '@sveltejs/vite-plugin-svelte': '^3.0.0'  // Compatible with Svelte 4
+  }
+};
+
 // Get framework from environment variable
 const framework = process.env.FRAMEWORK || '';
 const projectPath = process.cwd();
@@ -36,38 +56,86 @@ function fileExistsWithExtensions(basePath, extensions) {
   return false;
 }
 
+// Helper function to recursively read directory (compatible with older Node.js)
+function readDirRecursive(dir, fileList = []) {
+  const files = fs.readdirSync(dir);
+  
+  for (const file of files) {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+    
+    if (stat.isDirectory()) {
+      readDirRecursive(filePath, fileList);
+    } else {
+      fileList.push(path.relative(dir, filePath));
+    }
+  }
+  
+  return fileList;
+}
+
 // Detect framework from existing files
 function detectFramework() {
+  console.log('Starting framework detection...');
   const packageJsonPath = path.join(projectPath, 'package.json');
   
   // Check package.json for framework dependencies
   if (fs.existsSync(packageJsonPath)) {
+    console.log('Checking package.json for framework dependencies...');
     const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
     const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
     
-    if (allDeps.react || allDeps['react-dom']) return 'react';
-    if (allDeps.vue) return 'vue';
-    if (allDeps.svelte) return 'svelte';
+    if (allDeps.react || allDeps['react-dom']) {
+      console.log('Detected React in package.json');
+      return 'react';
+    }
+    if (allDeps.vue) {
+      console.log('Detected Vue in package.json');
+      return 'vue';
+    }
+    if (allDeps.svelte) {
+      console.log('Detected Svelte in package.json');
+      return 'svelte';
+    }
   }
   
   // Check for framework-specific files
-  if (fileExistsWithExtensions('src/App', ['.jsx', '.tsx'])) return 'react';
-  if (fileExistsWithExtensions('src/App', ['.vue'])) return 'vue';
-  if (fileExistsWithExtensions('src/App', ['.svelte'])) return 'svelte';
+  console.log('Checking for framework-specific App files...');
+  if (fileExistsWithExtensions('src/App', ['.jsx', '.tsx'])) {
+    console.log('Found React App component');
+    return 'react';
+  }
+  if (fileExistsWithExtensions('src/App', ['.vue'])) {
+    console.log('Found Vue App component');
+    return 'vue';
+  }
+  if (fileExistsWithExtensions('src/App', ['.svelte'])) {
+    console.log('Found Svelte App component');
+    return 'svelte';
+  }
   
   // Check for any JSX/Vue/Svelte files
   const srcDir = path.join(projectPath, 'src');
   if (fs.existsSync(srcDir)) {
-    const files = fs.readdirSync(srcDir, { recursive: true });
+    console.log('Scanning src directory for framework files...');
+    const files = readDirRecursive(srcDir);
     for (const file of files) {
-      if (typeof file === 'string') {
-        if (file.endsWith('.jsx') || file.endsWith('.tsx')) return 'react';
-        if (file.endsWith('.vue')) return 'vue';
-        if (file.endsWith('.svelte')) return 'svelte';
+      if (file.endsWith('.jsx') || file.endsWith('.tsx')) {
+        console.log(`Found React file: ${file}`);
+        return 'react';
+      }
+      if (file.endsWith('.vue')) {
+        console.log(`Found Vue file: ${file}`);
+        return 'vue';
+      }
+      if (file.endsWith('.svelte')) {
+        console.log(`Found Svelte file: ${file}`);
+        return 'svelte';
       }
     }
   }
   
+  console.log('No framework detected');
   return null;
 }
 
@@ -111,12 +179,12 @@ function scaffoldReact() {
       "preview": "vite preview"
     },
     "dependencies": {
-      "react": "^18.3.1",
-      "react-dom": "^18.3.1"
+      "react": FRAMEWORK_VERSIONS.react.react,
+      "react-dom": FRAMEWORK_VERSIONS.react['react-dom']
     },
     "devDependencies": {
-      "vite": "^5.0.0",
-      "@vitejs/plugin-react": "^4.3.0"
+      "vite": FRAMEWORK_VERSIONS.react.vite,
+      "@vitejs/plugin-react": FRAMEWORK_VERSIONS.react['@vitejs/plugin-react']
     }
   }, null, 2));
   
@@ -187,11 +255,11 @@ function scaffoldVue() {
       "preview": "vite preview"
     },
     "dependencies": {
-      "vue": "^3.5.0"
+      "vue": FRAMEWORK_VERSIONS.vue.vue
     },
     "devDependencies": {
-      "vite": "^5.0.0",
-      "@vitejs/plugin-vue": "^5.1.0"
+      "vite": FRAMEWORK_VERSIONS.vue.vite,
+      "@vitejs/plugin-vue": FRAMEWORK_VERSIONS.vue['@vitejs/plugin-vue']
     }
   }, null, 2));
   
@@ -269,11 +337,11 @@ function scaffoldSvelte() {
       "preview": "vite preview"
     },
     "dependencies": {
-      "svelte": "^5.0.0"
+      "svelte": FRAMEWORK_VERSIONS.svelte.svelte
     },
     "devDependencies": {
-      "vite": "^5.0.0",
-      "@sveltejs/vite-plugin-svelte": "^4.0.0"
+      "vite": FRAMEWORK_VERSIONS.svelte.vite,
+      "@sveltejs/vite-plugin-svelte": FRAMEWORK_VERSIONS.svelte['@sveltejs/vite-plugin-svelte']
     }
   }, null, 2));
   
