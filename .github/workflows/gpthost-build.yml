@@ -350,7 +350,7 @@ jobs:
             tv=$(jq -r '.devDependencies["tailwindcss"] // .dependencies["tailwindcss"]' package.json)
             # If Tailwind v4 is specified, prefer the new @tailwindcss/postcss plugin
             case "$tv" in
-              4.*|^4*|~4*|>=4*|*x*|*latest*) tailwind_plugin_name='@tailwindcss/postcss' ;;
+              '4.'* | '^4'* | '~4'* | '>=4'* | *x* | *latest* ) tailwind_plugin_name='@tailwindcss/postcss' ;;
               *) tailwind_plugin_name='tailwindcss' ;;
             esac
             if [ "$tailwind_plugin_name" = "@tailwindcss/postcss" ]; then
