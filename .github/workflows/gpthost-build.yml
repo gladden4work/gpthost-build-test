@@ -218,6 +218,23 @@ jobs:
               grep -R -q -n -E "$pattern" ${*:-.} 2>/dev/null
             fi
           }
+          # Helper: scan source code with extension restriction to reduce false positives
+          scan_code() {
+            local pattern="$1"; shift || true
+            # Default roots if none provided
+            local roots=(src usecase components index.html)
+            if [ "$#" -gt 0 ]; then
+              roots=("$@")
+            fi
+            if command -v rg >/dev/null 2>&1; then
+              rg -q -n -S -e "$pattern" -g "*.{js,jsx,ts,tsx,mdx,html}" "${roots[@]}" 2>/dev/null
+            else
+              # GNU grep supports multiple --include; use a brace expansion fallback for POSIX shells
+              grep -R -q -n -E "$pattern" \
+                --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.mdx' --include='*.html' \
+                "${roots[@]}" 2>/dev/null
+            fi
+          }
           # Create empty package.json if missing (allows jq mutations below)
           if [ ! -f package.json ]; then echo '{}' > package.json; fi
 
@@ -242,8 +259,27 @@ jobs:
           # This covers uploads that only contain TSX/JSX files (no CSS yet),
           # like usecase/* components produced by GPTHost.
           tailwind_code_detected=false
-          if scan "(class|className)\\s*=\\s*['\"]([^'\"]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span)" src usecase components index.html; then
+          # Attribute with single/double quotes
+          if scan_code "(class|className)\\s*=\\s*['\"]([^'\"]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span))"; then
             tailwind_code_detected=true
+          fi
+          # Attribute with template literal backticks
+          if ! $tailwind_code_detected && scan_code "(class|className)\\s*=\\s*`[^`]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span)"; then
+            tailwind_code_detected=true
+          fi
+          # Variable-held class strings (const/let/var = '...' or "..." or `...`)
+          if ! $tailwind_code_detected && scan_code "\\b(const|let|var)\\s+\\w+\\s*=\\s*(['\"`])[^'\"`]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span)"; then
+            tailwind_code_detected=true
+          fi
+
+          # Safety net (Phase 4): if ambiguous but usecase TSX exists, enable Tailwind
+          tailwind_safety_net_reason=""
+          if ! $tailwind_code_detected; then
+            if [ -d usecase ] && find usecase -type f -name "*.tsx" -print -quit | grep -q .; then
+              tailwind_code_detected=true
+              tailwind_safety_net_reason="usecase_tsx_present"
+              echo "🛟 Safety net: Detected usecase/*.tsx, enabling Tailwind wiring."
+            fi
           fi
 
           # Helper to add or update a devDependency version in package.json via jq
@@ -355,6 +391,16 @@ jobs:
               if ! jq -e '.dependencies["@fortawesome/fontawesome-free"] // .devDependencies["@fortawesome/fontawesome-free"]' package.json >/dev/null 2>&1; then
                 add_dep @fortawesome/fontawesome-free ^6.5.2
               fi
+            fi
+
+            # Export detection intent for downstream guardrail (Phase 3)
+            if $tailwind_code_detected; then
+              echo "TAILWIND_INTENT=true" >> $GITHUB_ENV
+            else
+              echo "TAILWIND_INTENT=false" >> $GITHUB_ENV
+            fi
+            if [ -n "$tailwind_safety_net_reason" ]; then
+              echo "TAILWIND_SAFETY_NET_REASON=$tailwind_safety_net_reason" >> $GITHUB_ENV
             fi
           fi
 
@@ -476,6 +522,67 @@ jobs:
           test -f dist/index.html
           echo "Build output:"
           ls -la dist/
+
+      - name: Validate CSS output (Tailwind guardrail)
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Running Tailwind CSS guardrail validation..."
+          if [ "${TAILWIND_INTENT:-false}" != "true" ]; then
+            echo "No Tailwind intent detected; skipping guardrail."
+            exit 0
+          fi
+
+          if [ ! -d dist ]; then
+            echo "ERROR: dist/ missing; cannot validate CSS."
+            exit 1
+          fi
+
+          # Sum total CSS size across dist
+          total_css_bytes=0
+          while IFS= read -r -d '' f; do
+            sz=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+            total_css_bytes=$(( total_css_bytes + sz ))
+          done < <(find dist -type f -name "*.css" -print0)
+          echo "Total built CSS size: ${total_css_bytes} bytes"
+
+          # Build representative selector patterns
+          # Prefer scanning source for concrete utilities; fallback to generic set
+          selector_hit=false
+          tmp_css=$(mktemp)
+          cat $(find dist -type f -name "*.css") > "$tmp_css" || true
+
+          # Try to extract a few concrete class names from sources
+          sample_classes=""
+          if command -v rg >/dev/null 2>&1; then
+            sample_classes=$(rg -o -n -S --no-line-number \
+              "(text-[a-z]+-\d+|bg-[a-z-]+-\d+|rounded(?:-[a-z0-9]+)?|ring-\d+|shadow(?:-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(?:-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" \
+              src components usecase index.html 2>/dev/null | awk '{print $1}' | head -n 10 | tr '\n' ' ')
+          else
+            sample_classes=$(grep -R -h -E "(text-[a-z]+-[0-9]+|bg-[a-z-]+-[0-9]+|rounded(-[a-z0-9]+)?|ring-[0-9]+|shadow(-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" src components usecase index.html 2>/dev/null | head -n 10 | tr '\n' ' ')
+          fi
+
+          # Always add a few common representatives for safety
+          sample_classes="$sample_classes text-emerald-300 bg-indigo-500 rounded-2xl"
+
+          for cls in $sample_classes; do
+            # Escape regex special chars and ensure leading dot in CSS
+            safe_cls=$(printf '%s' "$cls" | sed -E 's/([\^$.|?*+()\[\]{}])/\\\\\1/g')
+            if grep -qE "\\.${safe_cls}(\\b|:)" "$tmp_css"; then
+              echo "Found Tailwind selector in CSS: .$cls"
+              selector_hit=true
+              break
+            fi
+          done
+
+          rm -f "$tmp_css"
+
+          if [ "$selector_hit" = false ] && [ "${total_css_bytes}" -lt 20000 ]; then
+            echo "❌ Guardrail: Tailwind utilities were detected in sources, but built CSS looks too small and contains no representative Tailwind selectors."
+            echo "Hint: Ensure Tailwind plugin is active in postcss.config.js and content globs include src/, components/, and usecase/."
+            exit 1
+          fi
+          echo "✅ Tailwind guardrail passed."
 
       - name: Prepare artifacts
         run: |
