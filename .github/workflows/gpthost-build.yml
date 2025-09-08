@@ -140,6 +140,14 @@ jobs:
           echo "Package.json contents:"
           cat package.json 2>/dev/null || echo "No package.json"
 
+      - name: Enforce relative base for Vite (subpath-safe)
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          # Some uploads provide their own vite.config.* without base './'.
+          # Patch it to avoid absolute '/assets' in dist/index.html and dynamic imports.
+          node ../../scripts/ensure-relative-base.mjs || true
+
       - name: Honor root package.json and merge build_config
         working-directory: projects/${{ inputs.project_id }}
         env:
