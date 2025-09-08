@@ -97,15 +97,44 @@ jobs:
               *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
             esac
             case "$key" in
-              package.json|vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|tsconfig.json|tsconfig.node.json)
-                target="$key" ;;
-              public/*|src/*|index.html) target="$key" ;;
-              *) target="src/$key" ;;
+              # Config files that MUST stay at root level
+              package.json|package-lock.json|\
+              vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|\
+              postcss.config.js|postcss.config.mjs|postcss.config.cjs|postcss.config.ts|\
+              tailwind.config.js|tailwind.config.mjs|tailwind.config.cjs|tailwind.config.ts|\
+              tsconfig.json|tsconfig.node.json|jsconfig.json|\
+              .env|.env.local|.env.production|.gitignore)
+                target="$key"
+                echo "⚙️  Config file (root): $key" ;;
+              # Files/dirs that keep their original structure
+              public/*|src/*|index.html|assets/*|static/*|components/*|usecase/*)
+                target="$key"
+                echo "📁 Preserving path: $key" ;;
+              # Everything else goes to src/
+              *)
+                target="src/$key"
+                echo "📄 Component file (src): $key → $target" ;;
             esac
             mkdir -p "$(dirname "$target")"
             printf "%s" "$content" > "$target"
             echo "Created: $target"
           done
+          
+          # Verify critical config files are at root (not in src/)
+          echo ""
+          echo "🔍 Verifying config file placement:"
+          for config_file in postcss.config.js postcss.config.mjs postcss.config.cjs postcss.config.ts \
+                            tailwind.config.js tailwind.config.mjs tailwind.config.cjs tailwind.config.ts \
+                            vite.config.js vite.config.mjs vite.config.ts; do
+            if [ -f "$config_file" ]; then
+              echo "   ✅ Found at root: $config_file"
+            fi
+            if [ -f "src/$config_file" ]; then
+              echo "   ⚠️  WARNING: Found in src/: $config_file (should be at root!)"
+            fi
+          done
+          echo ""
+          
           if [ ! -f index.html ]; then
             printf '%s\n' \
               '<!DOCTYPE html>' \
@@ -201,10 +230,12 @@ jobs:
             has_index_css=true
           fi
 
-          # Remove incorrectly placed PostCSS config created by some templates
+          # PostCSS config should now be correctly placed at root by the file materialization step
+          # Verify it's not in src/ (this should no longer happen with our fix)
           if [ -f src/postcss.config.js ]; then
-            echo "Removing stray src/postcss.config.js (Vite expects root config)"
-            rm -f src/postcss.config.js || true
+            echo "⚠️  WARNING: Found postcss.config.js in src/ - this shouldn't happen with fixed placement logic"
+            echo "Moving to root where Vite expects it..."
+            mv src/postcss.config.js postcss.config.js || true
           fi
 
           # Detect Tailwind-style utility classes directly in source code.
