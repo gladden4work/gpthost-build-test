@@ -49,6 +49,10 @@ env:
   CALLBACK_URL: ${{ inputs.callback_url }}
   CALLBACK_TOKEN: ${{ inputs.callback_token }}
 
+concurrency:
+  group: build-${{ github.event.inputs.project_id }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
