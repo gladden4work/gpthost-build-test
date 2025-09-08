@@ -175,6 +175,175 @@ jobs:
             echo "No valid build_config provided; skipping merge."
           fi
 
+      - name: Ensure CSS config and dependencies
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Ensuring CSS entry, PostCSS config, and required deps..."
+          # Helper: portable source scanner (uses ripgrep when available)
+          scan() {
+            local pattern="$1"; shift || true
+            if command -v rg >/dev/null 2>&1; then
+              rg -q -n -S -e "$pattern" "$@" 2>/dev/null
+            else
+              grep -R -q -n -E "$pattern" ${*:-.} 2>/dev/null
+            fi
+          }
+          # Create empty package.json if missing (allows jq mutations below)
+          if [ ! -f package.json ]; then echo '{}' > package.json; fi
+
+          has_index_css=false
+          if [ -f src/index.css ]; then
+            has_index_css=true
+          elif [ -f index.css ]; then
+            mkdir -p src
+            mv index.css src/index.css
+            has_index_css=true
+          fi
+
+          # Helper to add or update a devDependency version in package.json via jq
+          add_dev_dep() {
+            local name="$1"; local version="$2"
+            tmp=$(mktemp)
+            jq --arg n "$name" --arg v "$version" '
+              .devDependencies = (.devDependencies // {}) |
+              .devDependencies[$n] = $v
+            ' package.json > "$tmp" && mv "$tmp" package.json
+            echo "Added devDependency: $name@$version"
+          }
+
+          # Helper to add or update a dependency
+          add_dep() {
+            local name="$1"; local version="$2"
+            tmp=$(mktemp)
+            jq --arg n "$name" --arg v "$version" '
+              .dependencies = (.dependencies // {}) |
+              .dependencies[$n] = $v
+            ' package.json > "$tmp" && mv "$tmp" package.json
+            echo "Added dependency: $name@$version"
+          }
+
+          if $has_index_css; then
+            # Detect Tailwind usage and ensure tailwindcss + config
+            if scan "^@tailwind\\s+base;|^@tailwind\\s+components;|^@tailwind\\s+utilities;" src/index.css; then
+              if ! jq -e '.devDependencies["tailwindcss"]' package.json >/dev/null 2>&1; then
+                add_dev_dep tailwindcss ^3.4.17
+              fi
+              # Generate a minimal tailwind.config.ts if missing
+              if [ ! -f tailwind.config.ts ] && [ ! -f tailwind.config.js ]; then
+                cat > tailwind.config.ts << 'EOF'
+                import type { Config } from 'tailwindcss'
+
+                export default {
+                  content: [
+                    './index.html',
+                    './src/**/*.{js,jsx,ts,tsx,mdx}',
+                    './components/**/*.{ts,tsx}',
+                    './usecase/**/*.{js,jsx,ts,tsx}'
+                  ],
+                  theme: {
+                    extend: {},
+                  },
+                  plugins: [],
+                } satisfies Config
+                EOF
+                echo "Created tailwind.config.ts"
+              fi
+            fi
+
+            # Detect framework CSS imports and ensure packages
+            if scan "modern-normalize" src/index.css; then
+              if ! jq -e '.devDependencies["modern-normalize"] // .dependencies["modern-normalize"]' package.json >/dev/null 2>&1; then
+                add_dev_dep modern-normalize ^1.1.0
+              fi
+            fi
+            if scan "bootstrap/.+\\.css" src/index.css; then
+              if ! jq -e '.dependencies["bootstrap"] // .devDependencies["bootstrap"]' package.json >/dev/null 2>&1; then
+                add_dep bootstrap ^5.3.3
+              fi
+            fi
+            if scan "bulma/.+\\.css" src/index.css; then
+              if ! jq -e '.dependencies["bulma"] // .devDependencies["bulma"]' package.json >/dev/null 2>&1; then
+                add_dep bulma ^1.0.0
+              fi
+            fi
+            # Additional common CSS frameworks
+            if scan "materialize-css/.+\\.css|materialize\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["materialize-css"] // .devDependencies["materialize-css"]' package.json >/dev/null 2>&1; then
+                add_dep materialize-css ^1.0.0
+              fi
+            fi
+            if scan "foundation-sites/.+\\.css|foundation\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["foundation-sites"] // .devDependencies["foundation-sites"]' package.json >/dev/null 2>&1; then
+                add_dep foundation-sites ^6.7.0
+              fi
+            fi
+            if scan "semantic-ui-css/.+\\.css|semantic\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["semantic-ui-css"] // .devDependencies["semantic-ui-css"]' package.json >/dev/null 2>&1; then
+                add_dep semantic-ui-css ^2.5.0
+              fi
+            fi
+            if scan "normalize\\.css" src/index.css; then
+              if ! jq -e '.devDependencies["normalize.css"] // .dependencies["normalize.css"]' package.json >/dev/null 2>&1; then
+                add_dev_dep normalize.css ^8.0.1
+              fi
+            fi
+            # Icon font CSS packages
+            if scan "bootstrap-icons/.+\\.css|bootstrap-icons\\.css" src/index.css; then
+              if ! jq -e '.dependencies["bootstrap-icons"] // .devDependencies["bootstrap-icons"]' package.json >/dev/null 2>&1; then
+                add_dep bootstrap-icons ^1.11.3
+              fi
+            fi
+            if scan "@fortawesome/fontawesome-free/.+\\.css|all\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["@fortawesome/fontawesome-free"] // .devDependencies["@fortawesome/fontawesome-free"]' package.json >/dev/null 2>&1; then
+                add_dep @fortawesome/fontawesome-free ^6.5.2
+              fi
+            fi
+          fi
+
+          # Auto-detect SCSS usage across sources and ensure sass
+          if scan "\\.(scss|sass)\"|\\.(scss|sass)\'|@import[^;]*\\.(scss|sass)" src index.html || scan "\\.(scss|sass)$" src; then
+            if ! jq -e '.devDependencies["sass"] // .dependencies["sass"]' package.json >/dev/null 2>&1; then
+              add_dev_dep sass ^1.77.6
+            fi
+          fi
+
+          # Ensure base PostCSS plugins are present when we write postcss.config.js
+          if ! jq -e '.devDependencies["postcss-import"] // .dependencies["postcss-import"]' package.json >/dev/null 2>&1; then
+            add_dev_dep postcss-import ^15.1.0
+          fi
+          if ! jq -e '.devDependencies["autoprefixer"] // .dependencies["autoprefixer"]' package.json >/dev/null 2>&1; then
+            add_dev_dep autoprefixer ^10.4.21
+          fi
+
+          # Always ensure a valid PostCSS config exists, with optional tailwindcss
+          include_tailwind=false
+          if jq -e '.devDependencies["tailwindcss"] // .dependencies["tailwindcss"]' package.json >/dev/null 2>&1; then
+            include_tailwind=true
+          fi
+
+          cat > postcss.config.js << 'EOF'
+          export default {
+            plugins: {
+              'postcss-import': {},
+          EOF
+          if $include_tailwind; then
+            printf "    'tailwindcss': {},\n" >> postcss.config.js
+          fi
+          cat >> postcss.config.js << 'EOF'
+              'autoprefixer': {}
+            }
+          }
+          EOF
+          echo "Ensured valid postcss.config.js (tailwind: ${include_tailwind})"
+
+          # Ensure src/index.css exists at minimum to avoid Vite CSS pipeline confusion
+          if [ "$has_index_css" = false ]; then
+            mkdir -p src
+            printf "/* Base styles placeholder */\n" > src/index.css
+            echo "Created placeholder src/index.css"
+          fi
+
       - name: Build project
         working-directory: projects/${{ inputs.project_id }}
         run: |
