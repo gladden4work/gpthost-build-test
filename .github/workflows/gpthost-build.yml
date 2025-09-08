@@ -245,22 +245,22 @@ jobs:
               fi
               # Generate a minimal tailwind.config.ts if missing
               if [ ! -f tailwind.config.ts ] && [ ! -f tailwind.config.js ]; then
-                cat > tailwind.config.ts <<'EOF'
-          import type { Config } from 'tailwindcss'
-
-          export default {
-            content: [
-              './index.html',
-              './src/**/*.{js,jsx,ts,tsx,mdx}',
-              './components/**/*.{js,jsx,ts,tsx,mdx}',
-              './usecase/**/*.{js,jsx,ts,tsx,mdx}'
-            ],
-            theme: {
-              extend: {},
-            },
-            plugins: [],
-          } satisfies Config
-          EOF
+                printf "%s\n" \
+                  "import type { Config } from 'tailwindcss'" \
+                  "" \
+                  "export default {" \
+                  "  content: [" \
+                  "    './index.html'," \
+                  "    './src/**/*.{js,jsx,ts,tsx,mdx}'," \
+                  "    './components/**/*.{js,jsx,ts,tsx,mdx}'," \
+                  "    './usecase/**/*.{js,jsx,ts,tsx,mdx}'" \
+                  "  ]," \
+                  "  theme: {" \
+                  "    extend: {}," \
+                  "  }," \
+                  "  plugins: []," \
+                  "} satisfies Config" \
+                  > tailwind.config.ts
                 echo "Created tailwind.config.ts"
               fi
               # Ensure src/index.css contains Tailwind directives if not already present
@@ -359,19 +359,20 @@ jobs:
             fi
           fi
 
-          cat > postcss.config.js <<'EOF'
-          export default {
-            plugins: {
-              'postcss-import': {},
-          EOF
+          # Write postcss.config.js without heredocs to avoid YAML indentation issues
+          printf "%s\n" \
+            "export default {" \
+            "  plugins: {" \
+            "    'postcss-import': {}," \
+            > postcss.config.js
           if $include_tailwind; then
             printf "    '%s': {},\n" "$tailwind_plugin_name" >> postcss.config.js
           fi
-          cat >> postcss.config.js <<'EOF'
-              'autoprefixer': {}
-            }
-          }
-          EOF
+          printf "%s\n" \
+            "    'autoprefixer': {}" \
+            "  }" \
+            "}" \
+            >> postcss.config.js
           echo "Ensured valid postcss.config.js (tailwind: ${include_tailwind}, plugin: ${tailwind_plugin_name})"
 
           # Ensure src/index.css exists at minimum to avoid Vite CSS pipeline confusion
