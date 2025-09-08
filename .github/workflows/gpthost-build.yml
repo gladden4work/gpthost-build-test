@@ -231,22 +231,22 @@ jobs:
               fi
               # Generate a minimal tailwind.config.ts if missing
               if [ ! -f tailwind.config.ts ] && [ ! -f tailwind.config.js ]; then
-                cat > tailwind.config.ts << 'EOF'
-                import type { Config } from 'tailwindcss'
+                cat > tailwind.config.ts <<'EOF'
+          import type { Config } from 'tailwindcss'
 
-                export default {
-                  content: [
-                    './index.html',
-                    './src/**/*.{js,jsx,ts,tsx,mdx}',
-                    './components/**/*.{ts,tsx}',
-                    './usecase/**/*.{js,jsx,ts,tsx}'
-                  ],
-                  theme: {
-                    extend: {},
-                  },
-                  plugins: [],
-                } satisfies Config
-                EOF
+          export default {
+            content: [
+              './index.html',
+              './src/**/*.{js,jsx,ts,tsx,mdx}',
+              './components/**/*.{ts,tsx}',
+              './usecase/**/*.{js,jsx,ts,tsx}'
+            ],
+            theme: {
+              extend: {},
+            },
+            plugins: [],
+          } satisfies Config
+          EOF
                 echo "Created tailwind.config.ts"
               fi
             fi
@@ -322,7 +322,7 @@ jobs:
             include_tailwind=true
           fi
 
-          cat > postcss.config.js << 'EOF'
+          cat > postcss.config.js <<'EOF'
           export default {
             plugins: {
               'postcss-import': {},
@@ -330,7 +330,7 @@ jobs:
           if $include_tailwind; then
             printf "    'tailwindcss': {},\n" >> postcss.config.js
           fi
-          cat >> postcss.config.js << 'EOF'
+          cat >> postcss.config.js <<'EOF'
               'autoprefixer': {}
             }
           }
