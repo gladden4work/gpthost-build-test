@@ -192,10 +192,15 @@ jobs:
               exit 1
             fi
             
-            # Check for relative paths
+            # Check for root-relative paths and rewrite to relative
             if [ -f "dist/index.html" ]; then
               if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
-                echo "WARNING: Found absolute paths in index.html"
+                echo "Rewriting absolute paths in index.html"
+                sed -i -e 's#src="/#src="./#g' -e 's#href="/#href="./#g' dist/index.html
+                if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
+                  echo "ERROR: Found root-relative URLs in index.html after rewrite"
+                  exit 1
+                fi
               else
                 echo "✓ Paths are relative"
               fi
@@ -207,6 +212,11 @@ jobs:
             cp -f index.html dist/index.html
             if [ -d public ]; then cp -r public/. dist/; fi
             if [ -d src ]; then mkdir -p dist/src && cp -r src/. dist/src/; fi
+            node ../../scripts/rewrite-root-paths.mjs dist
+            if grep -R 'href="/' dist >/dev/null || grep -R 'src="/' dist >/dev/null || grep -R 'url(/' dist >/dev/null; then
+              echo "ERROR: Found root-relative URLs after rewrite"
+              exit 1
+            fi
           fi
           
           test -f dist/index.html
