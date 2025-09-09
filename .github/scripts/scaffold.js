@@ -188,8 +188,8 @@ function scaffoldReact() {
     }
   }, null, 2));
   
-  // Create vite.config.js with base './' for subpath deployment
-  writeFileIfNotExists('vite.config.js', `import { defineConfig } from 'vite'
+  // Create ESM vite.config.mjs with base './' for subpath deployment
+  writeFileIfNotExists('vite.config.mjs', `import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
@@ -263,8 +263,8 @@ function scaffoldVue() {
     }
   }, null, 2));
   
-  // Create vite.config.js with base './' for subpath deployment
-  writeFileIfNotExists('vite.config.js', `import { defineConfig } from 'vite'
+  // Create ESM vite.config.mjs with base './' for subpath deployment
+  writeFileIfNotExists('vite.config.mjs', `import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
@@ -345,8 +345,8 @@ function scaffoldSvelte() {
     }
   }, null, 2));
   
-  // Create vite.config.js with base './' for subpath deployment
-  writeFileIfNotExists('vite.config.js', `import { defineConfig } from 'vite'
+  // Create ESM vite.config.mjs with base './' for subpath deployment
+  writeFileIfNotExists('vite.config.mjs', `import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 
 export default defineConfig({
