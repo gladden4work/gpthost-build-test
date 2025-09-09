@@ -478,6 +478,18 @@ jobs:
             echo "Inserted index.css import into $main_file"
           fi
 
+      - name: Detect and install dependencies
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Detecting dependencies from sources..."
+          if [ -f "${{ github.workspace }}/.github/scripts/detect-dependencies.js" ]; then
+            DETECT_DEPS_INSTALL=1 DETECT_DEPS_ALLOW_UNSAFE=1 \
+              node "${{ github.workspace }}/.github/scripts/detect-dependencies.js" . || true
+          else
+            echo "detect-dependencies.js not found; skipping detection"
+          fi
+
       - name: Build project
         working-directory: projects/${{ inputs.project_id }}
         run: |
@@ -573,9 +585,9 @@ jobs:
           # Try to extract a few concrete class names from sources
           sample_classes=""
             if command -v rg >/dev/null 2>&1; then
-              sample_classes=$(rg -o -n -S --no-line-number \
+              sample_classes=$(rg -o -S --no-filename \
                 "(text-[a-z]+-\d+|bg-[a-z-]+-\d+|rounded(?:-[a-z0-9]+)?|ring-\d+|shadow(?:-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(?:-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" \
-                src components usecase index.html 2>/dev/null | awk '{print $1}' | head -n 10 | tr '\n' ' ' || true)
+                src components usecase index.html 2>/dev/null | head -n 10 | tr '\n' ' ' || true)
             else
               sample_classes=$(grep -R -h -E "(text-[a-z]+-[0-9]+|bg-[a-z-]+-[0-9]+|rounded(-[a-z0-9]+)?|ring-[0-9]+|shadow(-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" src components usecase index.html 2>/dev/null | head -n 10 | tr '\n' ' ' || true)
             fi
