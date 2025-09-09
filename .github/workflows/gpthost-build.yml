@@ -460,6 +460,24 @@ jobs:
             echo "Created placeholder src/index.css"
           fi
 
+          # Ensure the main entry imports index.css so Tailwind styles are bundled
+          main_file=""
+          for f in src/main.tsx src/main.ts src/main.jsx src/main.js; do
+            if [ -f "$f" ]; then
+              main_file="$f"
+              break
+            fi
+          done
+          if [ -n "$main_file" ] && ! grep -q "import './index.css'" "$main_file"; then
+            tmp_main=$(mktemp)
+            {
+              echo "import './index.css'";
+              cat "$main_file";
+            } > "$tmp_main"
+            mv "$tmp_main" "$main_file"
+            echo "Inserted index.css import into $main_file"
+          fi
+
       - name: Build project
         working-directory: projects/${{ inputs.project_id }}
         run: |
@@ -554,13 +572,13 @@ jobs:
 
           # Try to extract a few concrete class names from sources
           sample_classes=""
-          if command -v rg >/dev/null 2>&1; then
-            sample_classes=$(rg -o -n -S --no-line-number \
-              "(text-[a-z]+-\d+|bg-[a-z-]+-\d+|rounded(?:-[a-z0-9]+)?|ring-\d+|shadow(?:-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(?:-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" \
-              src components usecase index.html 2>/dev/null | awk '{print $1}' | head -n 10 | tr '\n' ' ')
-          else
-            sample_classes=$(grep -R -h -E "(text-[a-z]+-[0-9]+|bg-[a-z-]+-[0-9]+|rounded(-[a-z0-9]+)?|ring-[0-9]+|shadow(-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" src components usecase index.html 2>/dev/null | head -n 10 | tr '\n' ' ')
-          fi
+            if command -v rg >/dev/null 2>&1; then
+              sample_classes=$(rg -o -n -S --no-line-number \
+                "(text-[a-z]+-\d+|bg-[a-z-]+-\d+|rounded(?:-[a-z0-9]+)?|ring-\d+|shadow(?:-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(?:-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" \
+                src components usecase index.html 2>/dev/null | awk '{print $1}' | head -n 10 | tr '\n' ' ' || true)
+            else
+              sample_classes=$(grep -R -h -E "(text-[a-z]+-[0-9]+|bg-[a-z-]+-[0-9]+|rounded(-[a-z0-9]+)?|ring-[0-9]+|shadow(-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" src components usecase index.html 2>/dev/null | head -n 10 | tr '\n' ' ' || true)
+            fi
 
           # Always add a few common representatives for safety
           sample_classes="$sample_classes text-emerald-300 bg-indigo-500 rounded-2xl"
