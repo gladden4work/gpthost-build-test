@@ -631,6 +631,30 @@ jobs:
             echo "detect-dependencies.js not found; skipping detection"
           fi
 
+      - name: Preflight TSX parse (esbuild sanity)
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Running esbuild preflight parse on TSX sources..."
+          # Find TSX files in common locations
+          mapfile -t tsx_files < <(find src components usecase -type f -name "*.tsx" 2>/dev/null || true)
+          if [ ${#tsx_files[@]} -eq 0 ]; then
+            echo "No TSX files found; skipping esbuild preflight."
+            exit 0
+          fi
+          # Use npx to avoid adding dependencies to package.json
+          # Mark common external packages to avoid resolution during parse
+          esbuild_ok=true
+          for f in "${tsx_files[@]}"; do
+            echo "- Parsing: $f"
+            if ! npx --yes esbuild "$f" --bundle --format=esm --outfile=/dev/null \
+                 --external:mammoth --external:lucide-react --log-level=error; then
+              echo "❌ Esbuild failed to parse TSX: $f"
+              esbuild_ok=false
+            fi
+          done
+          $esbuild_ok || { echo "Preflight TSX parse failed"; exit 1; }
+
       - name: Build project
         working-directory: projects/${{ inputs.project_id }}
         run: |
