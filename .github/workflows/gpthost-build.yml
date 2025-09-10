@@ -169,6 +169,133 @@ jobs:
           echo "Package.json contents:"
           cat package.json 2>/dev/null || echo "No package.json"
 
+      - name: Wire uploaded usecase component into React app
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Wiring uploaded usecase component (if any) into React app..."
+          # Find a TSX component under usecase/
+          first_tsx=""
+          if [ -d usecase ]; then
+            first_tsx=$(find usecase -type f -name "*.tsx" | head -n 1 || true)
+          fi
+
+          if [ -n "${first_tsx}" ]; then
+            echo "Found usecase component: ${first_tsx}"
+            mkdir -p src/components
+            # Only populate src/components/component.tsx if not provided already
+            if [ ! -f src/components/component.tsx ]; then
+              cp -f "${first_tsx}" src/components/component.tsx
+              echo "Created src/components/component.tsx from ${first_tsx}"
+            else
+              echo "src/components/component.tsx already exists; leaving as-is"
+            fi
+
+            # Ensure src/App.jsx exists and renders the component (do not overwrite if present)
+            if [ ! -f src/App.jsx ] && [ ! -f src/App.tsx ]; then
+              mkdir -p src
+              {
+                printf "%s\n" "import React from 'react'";
+                printf "%s\n" "import Component from './components/component'";
+                printf "%s\n" "import './index.css'";
+                printf "%s\n" "";
+                printf "%s\n" "export default function App() {";
+                printf "%s\n" "  return (";
+                printf "%s\n" "    <div className=\"min-h-screen p-6\">";
+                printf "%s\n" "      <Component />";
+                printf "%s\n" "    </div>";
+                printf "%s\n" "  )";
+                printf "%s\n" "}";
+              } > src/App.jsx
+              echo "Created src/App.jsx"
+            else
+              echo "App component already present; not overwriting"
+            fi
+
+            # Ensure src/main.jsx exists (React 18 entry)
+            if [ ! -f src/main.jsx ] && [ ! -f src/main.tsx ]; then
+              {
+                printf "%s\n" "import React from 'react'";
+                printf "%s\n" "import { createRoot } from 'react-dom/client'";
+                printf "%s\n" "import App from './App.jsx'";
+                printf "%s\n" "";
+                printf "%s\n" "createRoot(document.getElementById('root')).render(";
+                printf "%s\n" "  <React.StrictMode>";
+                printf "%s\n" "    <App />";
+                printf "%s\n" "  </React.StrictMode>";
+                printf "%s\n" ")";
+              } > src/main.jsx
+              echo "Created src/main.jsx"
+            else
+              echo "Main entry already present; not overwriting"
+            fi
+
+            # Ensure index.html exists and references /src/main.jsx
+            if [ ! -f index.html ]; then
+              {
+                printf "%s\n" "<!doctype html>";
+                printf "%s\n" "<html lang=\"en\">";
+                printf "%s\n" "  <head>";
+                printf "%s\n" "    <meta charset=\"UTF-8\" />";
+                printf "%s\n" "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />";
+                printf "%s\n" "    <title>GPTHost App</title>";
+                printf "%s\n" "  </head>";
+                printf "%s\n" "  <body>";
+                printf "%s\n" "    <div id=\"root\"></div>";
+                printf "%s\n" "    <script type=\"module\" src=\"/src/main.jsx\"></script>";
+                printf "%s\n" "  </body>";
+                printf "%s\n" "</html>";
+              } > index.html
+              echo "Created index.html"
+            else
+              # Patch index.html to include main entry if missing
+              if ! grep -q "/src/main.jsx" index.html; then
+                # Append script tag before closing body
+                tmp=$(mktemp)
+                awk '1; /<\/body>/{print "    <script type=\"module\" src=\"/src/main.jsx\"></script>"}' index.html > "$tmp"
+                mv "$tmp" index.html
+                echo "Patched index.html to reference /src/main.jsx"
+              fi
+            fi
+          else
+            echo "No usecase/*.tsx found; nothing to wire"
+          fi
+
+      - name: Ensure React Vite config availability
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          # If this looks like a React project but no config contains the React plugin, provide vite.config.mjs
+          is_react=false
+          if [ -f package.json ] && jq -e '.dependencies.react // .devDependencies.react' package.json >/dev/null 2>&1; then
+            is_react=true
+          else
+            # Fallback: detect React by presence of JSX/TSX under src
+            if find src -type f \( -name '*.jsx' -o -name '*.tsx' \) -print -quit | grep -q .; then
+              is_react=true
+            fi
+          fi
+
+          if $is_react; then
+            # Detect existing React plugin mention across possible config files
+            if ! grep -R "@vitejs/plugin-react" -n --include='vite.config.*' . >/dev/null 2>&1; then
+              {
+                printf "%s\n" "import { defineConfig } from 'vite'";
+                printf "%s\n" "import react from '@vitejs/plugin-react'";
+                printf "%s\n" "";
+                printf "%s\n" "export default defineConfig({";
+                printf "%s\n" "  base: './',";
+                printf "%s\n" "  plugins: [react()],";
+                printf "%s\n" "})";
+              } > vite.config.mjs
+              echo "Created vite.config.mjs with React plugin"
+            else
+              echo "React plugin already referenced in an existing Vite config"
+            fi
+          else
+            echo "Not a React project; skipping Vite React config provisioning"
+          fi
+
       - name: Enforce relative base for Vite (subpath-safe)
         working-directory: projects/${{ inputs.project_id }}
         run: |
@@ -528,11 +655,24 @@ jobs:
             fi
             
             echo "Running build..."
-            npm run build
+            # Prefer our React config when present to avoid config ambiguity and ensure plugin-react is applied
+            if jq -e '.dependencies.react // .devDependencies.react' package.json >/dev/null 2>&1 && [ -f vite.config.mjs ]; then
+              echo "React detected and vite.config.mjs present; running: npx vite build --config vite.config.mjs"
+              npx vite build --config vite.config.mjs
+            else
+              npm run build
+            fi
             
             # Verify build output
             if [ ! -d "dist" ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
               echo "ERROR: No build output found in dist/"
+              exit 1
+            fi
+            
+            # Guard: ensure at least one JS asset was emitted (avoid "green" builds with only index.html)
+            if ! find dist -type f \( -name "*.js" -o -name "*.mjs" \) -print -quit | grep -q .; then
+              echo "ERROR: No JS assets emitted in dist/ (likely nothing was compiled)."
+              echo "dist/ contents:"; ls -la dist || true
               exit 1
             fi
             
