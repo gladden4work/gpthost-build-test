@@ -144,6 +144,8 @@ const DEPENDENCY_MAP = {
   'highcharts': { package: 'highcharts', version: '^11.4.3' }
 };
 
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'coverage']);
+
 function loadOverrides() {
   const overridePath = process.env.DETECT_DEPS_OVERRIDE || 'dependency-overrides.json';
   if (fs.existsSync(overridePath)) {
@@ -180,6 +182,7 @@ function collectFiles(dir) {
   for (const entry of entries) {
     const res = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) continue;
       files.push(...collectFiles(res));
     } else if (/\.(js|ts|jsx|tsx)$/.test(entry.name)) {
       files.push(res);
@@ -219,7 +222,7 @@ function mergeDependencies(specs) {
   const pkgPath = path.resolve('package.json');
   if (!fs.existsSync(pkgPath)) {
     console.error('No package.json found, skipping');
-    return;
+    return { added: [], unknown: [] };
   }
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   pkg.dependencies = pkg.dependencies || {};
@@ -261,10 +264,12 @@ function mergeDependencies(specs) {
   if (unknown.length) {
     console.warn('Unknown dependencies:', unknown.join(', '));
   }
+  return { added, unknown };
 }
 
 function main() {
   const target = process.argv[2] || 'src';
+  const start = Date.now();
   const files = collectFiles(target);
   const specs = new Set();
   for (const file of files) {
@@ -273,7 +278,30 @@ function main() {
       specs.add(dep);
     }
   }
-  mergeDependencies(specs);
+  const { added, unknown } = mergeDependencies(specs);
+  const duration = Date.now() - start;
+  const metrics = {
+    filesScanned: files.length,
+    dependenciesDetected: specs.size,
+    dependenciesAdded: added.length,
+    unknownDependencies: unknown.length,
+    durationMs: duration
+  };
+  console.log(
+    `Dependency detection scanned ${metrics.filesScanned} files, ` +
+      `${metrics.dependenciesDetected} deps, added ${metrics.dependenciesAdded}, ` +
+      `${metrics.unknownDependencies} unknown in ${metrics.durationMs}ms`
+  );
+  if (process.env.DETECT_DEPS_METRICS) {
+    try {
+      fs.writeFileSync(
+        process.env.DETECT_DEPS_METRICS,
+        JSON.stringify(metrics, null, 2) + '\n'
+      );
+    } catch (err) {
+      console.warn('Failed to write metrics:', err.message);
+    }
+  }
 }
 
 main();
