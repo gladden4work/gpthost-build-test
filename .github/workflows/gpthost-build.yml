@@ -642,13 +642,16 @@ jobs:
             echo "No TSX files found; skipping esbuild preflight."
             exit 0
           fi
+          # Create temporary directory for esbuild output (handles CSS and other assets)
+          esbuild_tmp=$(mktemp -d)
+          trap "rm -rf '$esbuild_tmp'" EXIT
           # Use npx to avoid adding dependencies to package.json
-          # Mark common external packages to avoid resolution during parse
+          # Mark all npm packages as external to focus on syntax/structure validation
           esbuild_ok=true
           for f in "${tsx_files[@]}"; do
             echo "- Parsing: $f"
-            if ! npx --yes esbuild "$f" --bundle --format=esm --outfile=/dev/null \
-                 --external:mammoth --external:lucide-react --log-level=error; then
+            if ! npx --yes esbuild "$f" --bundle --format=esm --outdir="$esbuild_tmp" \
+                 --packages=external --log-level=error; then
               echo "❌ Esbuild failed to parse TSX: $f"
               esbuild_ok=false
             fi
