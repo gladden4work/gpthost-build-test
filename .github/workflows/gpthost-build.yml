@@ -282,10 +282,16 @@ jobs:
               {
                 printf "%s\n" "import { defineConfig } from 'vite'";
                 printf "%s\n" "import react from '@vitejs/plugin-react'";
+                printf "%s\n" "import path from 'path'";
                 printf "%s\n" "";
                 printf "%s\n" "export default defineConfig({";
                 printf "%s\n" "  base: './',";
                 printf "%s\n" "  plugins: [react()],";
+                printf "%s\n" "  resolve: {";
+                printf "%s\n" "    alias: {";
+                printf "%s\n" "      '@': path.resolve(process.cwd(), 'src'),";
+                printf "%s\n" "    },";
+                printf "%s\n" "  },";
                 printf "%s\n" "})";
               } > vite.config.mjs
               echo "Created vite.config.mjs with React plugin"
