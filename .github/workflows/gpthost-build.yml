@@ -627,14 +627,46 @@ jobs:
 
       - name: Detect and install dependencies
         working-directory: projects/${{ inputs.project_id }}
+        env:
+          PROJECT_ID: ${{ inputs.project_id }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
         run: |
           set -euo pipefail
           echo "Detecting dependencies from sources..."
           if [ -f "${{ github.workspace }}/.github/scripts/detect-dependencies.js" ]; then
-            DETECT_DEPS_INSTALL=1 DETECT_DEPS_ALLOW_UNSAFE=1 \
+            DETECT_DEPS_INSTALL=1 DETECT_DEPS_ALLOW_UNSAFE=1 DETECT_DEPS_AUDIT_FILE=dependency-audit.json \
               node "${{ github.workspace }}/.github/scripts/detect-dependencies.js" . || true
           else
             echo "detect-dependencies.js not found; skipping detection"
+          fi
+
+      - name: Send dependency audit event
+        if: always()
+        working-directory: projects/${{ inputs.project_id }}
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -euo pipefail
+          # Check if audit file was created (registry-fallback packages were auto-installed)
+          if [ -f "dependency-audit.json" ]; then
+            echo "📋 Sending dependency auto-install audit to backend..."
+            # POST to backend audit endpoint
+            HTTP_CODE=$(curl -sS -w "%{http_code}" -o /tmp/audit-response.json \
+              -X POST "${CALLBACK_URL}/dependency-audit" \
+              -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d @dependency-audit.json) || true
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+              echo "✅ Audit event sent successfully"
+            else
+              echo "⚠️ Audit event send returned: $HTTP_CODE (non-fatal)"
+              cat /tmp/audit-response.json 2>/dev/null || true
+            fi
+            rm -f dependency-audit.json
+          else
+            echo "ℹ️ No registry-fallback packages; skipping audit"
           fi
 
       - name: Preflight TSX parse (esbuild sanity)
