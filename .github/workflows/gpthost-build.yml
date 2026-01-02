@@ -209,7 +209,30 @@ jobs:
               } > src/App.jsx
               echo "Created src/App.jsx"
             else
-              echo "App component already present; not overwriting"
+              echo "App component already present; checking for self-recursion"
+              app_file=""
+              if [ -f src/App.tsx ]; then app_file="src/App.tsx"; fi
+              if [ -z "$app_file" ] && [ -f src/App.jsx ]; then app_file="src/App.jsx"; fi
+
+              # If App() renders <App />, the app will crash at runtime (blank page).
+              if [ -n "$app_file" ] && \
+                 grep -Eq "function[[:space:]]+App[[:space:]]*\\(" "$app_file" && \
+                 grep -Eq "<App[[:space:]]*/>" "$app_file"; then
+                echo "⚠️  Detected self-rendering App in $app_file; rewriting to render Component"
+                {
+                  printf "%s\n" "import React from 'react'";
+                  printf "%s\n" "import Component from './components/component'";
+                  printf "%s\n" "import './index.css'";
+                  printf "%s\n" "";
+                  printf "%s\n" "export default function App() {";
+                  printf "%s\n" "  return (";
+                  printf "%s\n" "    <div className=\"min-h-screen p-6\">";
+                  printf "%s\n" "      <Component />";
+                  printf "%s\n" "    </div>";
+                  printf "%s\n" "  )";
+                  printf "%s\n" "}";
+                } > "$app_file"
+              fi
             fi
 
             # Ensure src/main.jsx exists (React 18 entry)
