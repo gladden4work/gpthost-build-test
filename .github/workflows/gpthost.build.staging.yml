@@ -1,0 +1,976 @@
+name: GPTHost Build Pipeline (Worker Upload)
+# This workflow builds projects and sends artifacts to Worker for R2 upload
+# GitHub Actions cannot upload to R2 directly due to secret masking of account IDs
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: Project ID
+        required: true
+        type: string
+      source_files:
+        description: JSON object of files (path -> content)
+        required: true
+        type: string
+      callback_url:
+        description: Worker v2 callback URL
+        required: true
+        type: string
+      callback_token:
+        description: Bearer token for callback
+        required: true
+        type: string
+      framework:
+        description: Framework type (react|vue|svelte|auto)
+        required: false
+        type: string
+        default: 'auto'
+      build_command:
+        description: Custom build command (optional, ignored by minimal flow)
+        required: false
+        type: string
+      build_config:
+        description: Optional build config JSON (ignored by minimal flow)
+        required: false
+        type: string
+      correlation_id:
+        description: Correlation ID for tracing (optional)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  PROJECT_ID: ${{ inputs.project_id }}
+  FRAMEWORK: ${{ inputs.framework }}
+  CALLBACK_URL: ${{ inputs.callback_url }}
+  CALLBACK_TOKEN: ${{ inputs.callback_token }}
+
+concurrency:
+  group: build-${{ github.event.inputs.project_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install tools (jq)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      - name: Prepare workspace
+        run: |
+          set -euo pipefail
+          mkdir -p "projects/${{ inputs.project_id }}/src"
+          mkdir -p "projects/${{ inputs.project_id }}/public"
+          mkdir -p "artifacts/${{ inputs.project_id }}"
+
+      - name: Materialize source files
+        working-directory: projects/${{ inputs.project_id }}
+        env:
+          SOURCE_FILES: ${{ inputs.source_files }}
+        run: |
+          set -euo pipefail
+          echo "$SOURCE_FILES" > source.json
+          jq -e . source.json >/dev/null
+          jq -r 'to_entries[] | @base64' source.json | while read -r row; do
+            key=$(echo "$row" | base64 --decode | jq -r '.key')
+            content=$(echo "$row" | base64 --decode | jq -r '.value')
+            key="${key#./}"
+            case "$key" in
+              *".."*) echo "Skipping unsafe path: $key" >&2; continue ;;
+            esac
+            case "$key" in
+              # Config files that MUST stay at root level
+              package.json|package-lock.json|\
+              vite.config.js|vite.config.ts|vite.config.mjs|vite.config.cjs|\
+              postcss.config.js|postcss.config.mjs|postcss.config.cjs|postcss.config.ts|\
+              tailwind.config.js|tailwind.config.mjs|tailwind.config.cjs|tailwind.config.ts|\
+              tsconfig.json|tsconfig.node.json|jsconfig.json|\
+              .env|.env.local|.env.production|.gitignore)
+                target="$key"
+                echo "⚙️  Config file (root): $key" ;;
+              # Files/dirs that keep their original structure
+              public/*|src/*|index.html|assets/*|static/*|components/*|usecase/*)
+                target="$key"
+                echo "📁 Preserving path: $key" ;;
+              # Everything else goes to src/
+              *)
+                target="src/$key"
+                echo "📄 Component file (src): $key → $target" ;;
+            esac
+            mkdir -p "$(dirname "$target")"
+            printf "%s" "$content" > "$target"
+            echo "Created: $target"
+          done
+          
+          # Verify critical config files are at root (not in src/)
+          echo ""
+          echo "🔍 Verifying config file placement:"
+          for config_file in postcss.config.js postcss.config.mjs postcss.config.cjs postcss.config.ts \
+                            tailwind.config.js tailwind.config.mjs tailwind.config.cjs tailwind.config.ts \
+                            vite.config.js vite.config.mjs vite.config.ts; do
+            if [ -f "$config_file" ]; then
+              echo "   ✅ Found at root: $config_file"
+            fi
+            if [ -f "src/$config_file" ]; then
+              echo "   ⚠️  WARNING: Found in src/: $config_file (should be at root!)"
+            fi
+          done
+          echo ""
+          
+          if [ ! -f index.html ]; then
+            printf '%s\n' \
+              '<!DOCTYPE html>' \
+              '<html lang="en">' \
+              '  <head>' \
+              '    <meta charset="UTF-8" />' \
+              '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />' \
+              '    <title>GPTHost Minimal</title>' \
+              '  </head>' \
+              '  <body>' \
+              '    <div id="root">GPTHost Minimal Build</div>' \
+              '  </body>' \
+              '</html>' > index.html
+          fi
+
+      - name: Scaffold framework application
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Scaffolding framework application..."
+          node ../../.github/scripts/scaffold.js
+          echo "Scaffolding complete"
+          
+          # Show the resulting structure
+          echo "Project structure:"
+          ls -la
+          if [ -d "src" ]; then
+            echo "Source directory:"
+            ls -la src/
+          fi
+          
+          echo "Package.json contents:"
+          cat package.json 2>/dev/null || echo "No package.json"
+
+      - name: Wire uploaded usecase component into React app
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Wiring uploaded usecase component (if any) into React app..."
+          # Find a TSX component under usecase/
+          first_tsx=""
+          if [ -d usecase ]; then
+            first_tsx=$(find usecase -type f -name "*.tsx" | head -n 1 || true)
+          fi
+
+          if [ -n "${first_tsx}" ]; then
+            echo "Found usecase component: ${first_tsx}"
+            mkdir -p src/components
+            # Only populate src/components/component.tsx if not provided already
+            if [ ! -f src/components/component.tsx ]; then
+              cp -f "${first_tsx}" src/components/component.tsx
+              echo "Created src/components/component.tsx from ${first_tsx}"
+            else
+              echo "src/components/component.tsx already exists; leaving as-is"
+            fi
+
+            # Ensure src/App.jsx exists and renders the component (do not overwrite if present)
+            if [ ! -f src/App.jsx ] && [ ! -f src/App.tsx ]; then
+              mkdir -p src
+              {
+                printf "%s\n" "import React from 'react'";
+                printf "%s\n" "import Component from './components/component'";
+                printf "%s\n" "import './index.css'";
+                printf "%s\n" "";
+                printf "%s\n" "export default function App() {";
+                printf "%s\n" "  return (";
+                printf "%s\n" "    <div className=\"min-h-screen p-6\">";
+                printf "%s\n" "      <Component />";
+                printf "%s\n" "    </div>";
+                printf "%s\n" "  )";
+                printf "%s\n" "}";
+              } > src/App.jsx
+              echo "Created src/App.jsx"
+            else
+              echo "App component already present; checking for self-recursion"
+              app_file=""
+              if [ -f src/App.tsx ]; then app_file="src/App.tsx"; fi
+              if [ -z "$app_file" ] && [ -f src/App.jsx ]; then app_file="src/App.jsx"; fi
+
+              # If App() renders <App />, the app will crash at runtime (blank page).
+              if [ -n "$app_file" ] && \
+                 grep -Eq "function[[:space:]]+App[[:space:]]*\\(" "$app_file" && \
+                 grep -Eq "<App[[:space:]]*/>" "$app_file"; then
+                echo "⚠️  Detected self-rendering App in $app_file; rewriting to render Component"
+                {
+                  printf "%s\n" "import React from 'react'";
+                  printf "%s\n" "import Component from './components/component'";
+                  printf "%s\n" "import './index.css'";
+                  printf "%s\n" "";
+                  printf "%s\n" "export default function App() {";
+                  printf "%s\n" "  return (";
+                  printf "%s\n" "    <div className=\"min-h-screen p-6\">";
+                  printf "%s\n" "      <Component />";
+                  printf "%s\n" "    </div>";
+                  printf "%s\n" "  )";
+                  printf "%s\n" "}";
+                } > "$app_file"
+              fi
+            fi
+
+            # Ensure src/main.jsx exists (React 18 entry)
+            if [ ! -f src/main.jsx ] && [ ! -f src/main.tsx ]; then
+              {
+                printf "%s\n" "import React from 'react'";
+                printf "%s\n" "import { createRoot } from 'react-dom/client'";
+                printf "%s\n" "import App from './App.jsx'";
+                printf "%s\n" "";
+                printf "%s\n" "createRoot(document.getElementById('root')).render(";
+                printf "%s\n" "  <React.StrictMode>";
+                printf "%s\n" "    <App />";
+                printf "%s\n" "  </React.StrictMode>";
+                printf "%s\n" ")";
+              } > src/main.jsx
+              echo "Created src/main.jsx"
+            else
+              echo "Main entry already present; not overwriting"
+            fi
+
+            # Ensure index.html exists and references /src/main.jsx
+            if [ ! -f index.html ]; then
+              {
+                printf "%s\n" "<!doctype html>";
+                printf "%s\n" "<html lang=\"en\">";
+                printf "%s\n" "  <head>";
+                printf "%s\n" "    <meta charset=\"UTF-8\" />";
+                printf "%s\n" "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />";
+                printf "%s\n" "    <title>GPTHost App</title>";
+                printf "%s\n" "  </head>";
+                printf "%s\n" "  <body>";
+                printf "%s\n" "    <div id=\"root\"></div>";
+                printf "%s\n" "    <script type=\"module\" src=\"/src/main.jsx\"></script>";
+                printf "%s\n" "  </body>";
+                printf "%s\n" "</html>";
+              } > index.html
+              echo "Created index.html"
+            else
+              # Patch index.html to include main entry if missing
+              if ! grep -q "/src/main.jsx" index.html; then
+                # Append script tag before closing body
+                tmp=$(mktemp)
+                awk '1; /<\/body>/{print "    <script type=\"module\" src=\"/src/main.jsx\"></script>"}' index.html > "$tmp"
+                mv "$tmp" index.html
+                echo "Patched index.html to reference /src/main.jsx"
+              fi
+            fi
+          else
+            echo "No usecase/*.tsx found; nothing to wire"
+          fi
+
+      - name: Ensure React Vite config availability
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          # If this looks like a React project but no config contains the React plugin, provide vite.config.mjs
+          is_react=false
+          if [ -f package.json ] && jq -e '.dependencies.react // .devDependencies.react' package.json >/dev/null 2>&1; then
+            is_react=true
+          else
+            # Fallback: detect React by presence of JSX/TSX under src
+            if find src -type f \( -name '*.jsx' -o -name '*.tsx' \) -print -quit | grep -q .; then
+              is_react=true
+            fi
+          fi
+
+          if $is_react; then
+            # Detect existing React plugin mention across possible config files
+            if ! grep -R "@vitejs/plugin-react" -n --include='vite.config.*' . >/dev/null 2>&1; then
+              {
+                printf "%s\n" "import { defineConfig } from 'vite'";
+                printf "%s\n" "import react from '@vitejs/plugin-react'";
+                printf "%s\n" "import path from 'path'";
+                printf "%s\n" "";
+                printf "%s\n" "export default defineConfig({";
+                printf "%s\n" "  base: './',";
+                printf "%s\n" "  plugins: [react()],";
+                printf "%s\n" "  resolve: {";
+                printf "%s\n" "    alias: {";
+                printf "%s\n" "      '@': path.resolve(process.cwd(), 'src'),";
+                printf "%s\n" "    },";
+                printf "%s\n" "  },";
+                printf "%s\n" "})";
+              } > vite.config.mjs
+              echo "Created vite.config.mjs with React plugin"
+            else
+              echo "React plugin already referenced in an existing Vite config"
+            fi
+          else
+            echo "Not a React project; skipping Vite React config provisioning"
+          fi
+
+      - name: Enforce relative base for Vite (subpath-safe)
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          # Some uploads provide their own vite.config.* without base './'.
+          # Patch it to avoid absolute '/assets' in dist/index.html and dynamic imports.
+          node ../../scripts/ensure-relative-base.mjs || true
+
+      - name: Honor root package.json and merge build_config
+        working-directory: projects/${{ inputs.project_id }}
+        env:
+          BUILD_CONFIG: ${{ inputs.build_config }}
+        run: |
+          set -euo pipefail
+          # Merge optional build_config (package.json-like) into root package.json if provided
+          if [ -n "${BUILD_CONFIG:-}" ] && echo "$BUILD_CONFIG" | jq -e . >/dev/null 2>&1; then
+            echo "$BUILD_CONFIG" > build_config.raw.json
+            jq . build_config.raw.json > build_config.json
+            if [ ! -f package.json ]; then echo '{}' > package.json; fi
+            jq -s '
+              def md($a;$b): ($a//{}) as $A | ($b//{}) as $B | $A + $B;
+              .[0] as $pkg | .[1] as $cfg |
+              $pkg
+              | .dependencies = md($pkg.dependencies; $cfg.dependencies)
+              | .devDependencies = md($pkg.devDependencies; $cfg.devDependencies)
+              | .peerDependencies = md($pkg.peerDependencies; $cfg.peerDependencies)
+              | .scripts = md($pkg.scripts; $cfg.scripts)
+            ' package.json build_config.json > package.merged.json
+            mv package.merged.json package.json
+            echo "Merged build_config into package.json"
+            echo "Resulting package.json:"; cat package.json
+          else
+            echo "No valid build_config provided; skipping merge."
+          fi
+
+      - name: Ensure CSS config and dependencies
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Ensuring CSS entry, PostCSS config, and required deps..."
+          # Helper: portable source scanner (uses ripgrep when available)
+          scan() {
+            local pattern="$1"; shift || true
+            if command -v rg >/dev/null 2>&1; then
+              rg -q -n -S -e "$pattern" "$@" 2>/dev/null
+            else
+              grep -R -q -n -E "$pattern" ${*:-.} 2>/dev/null
+            fi
+          }
+          # Helper: scan source code with extension restriction to reduce false positives
+          scan_code() {
+            local pattern="$1"; shift || true
+            # Default roots if none provided
+            local roots=(src usecase components index.html)
+            if [ "$#" -gt 0 ]; then
+              roots=("$@")
+            fi
+            if command -v rg >/dev/null 2>&1; then
+              rg -q -n -S -e "$pattern" -g "*.{js,jsx,ts,tsx,mdx,html}" "${roots[@]}" 2>/dev/null
+            else
+              # GNU grep supports multiple --include; use a brace expansion fallback for POSIX shells
+              grep -R -q -n -E "$pattern" \
+                --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.mdx' --include='*.html' \
+                "${roots[@]}" 2>/dev/null
+            fi
+          }
+          # Create empty package.json if missing (allows jq mutations below)
+          if [ ! -f package.json ]; then echo '{}' > package.json; fi
+
+          has_index_css=false
+          if [ -f src/index.css ]; then
+            has_index_css=true
+          elif [ -f index.css ]; then
+            mkdir -p src
+            mv index.css src/index.css
+            has_index_css=true
+          fi
+
+          # PostCSS config should now be correctly placed at root by the file materialization step
+          # Verify it's not in src/ (this should no longer happen with our fix)
+          if [ -f src/postcss.config.js ]; then
+            echo "⚠️  WARNING: Found postcss.config.js in src/ - this shouldn't happen with fixed placement logic"
+            echo "Moving to root where Vite expects it..."
+            mv src/postcss.config.js postcss.config.js || true
+          fi
+
+          # Detect Tailwind-style utility classes directly in source code.
+          # This covers uploads that only contain TSX/JSX files (no CSS yet),
+          # like usecase/* components produced by GPTHost.
+          tailwind_code_detected=false
+          # Attribute with single/double quotes
+          if scan_code "(class|className)\\s*=\\s*['\"]([^'\"]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span))"; then
+            tailwind_code_detected=true
+          fi
+          # Attribute with template literal backticks
+          if ! $tailwind_code_detected && scan_code "(class|className)\\s*=\\s*`[^`]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span)"; then
+            tailwind_code_detected=true
+          fi
+          # Variable-held class strings (const/let/var = '...' or "..." or `...`)
+          if ! $tailwind_code_detected && scan_code "\\b(const|let|var)\\s+\\w+\\s*=\\s*(['\"`])[^'\"`]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span)"; then
+            tailwind_code_detected=true
+          fi
+
+          # Safety net (Phase 4): if ambiguous but usecase TSX exists, enable Tailwind
+          tailwind_safety_net_reason=""
+          if ! $tailwind_code_detected; then
+            if [ -d usecase ] && find usecase -type f -name "*.tsx" -print -quit | grep -q .; then
+              tailwind_code_detected=true
+              tailwind_safety_net_reason="usecase_tsx_present"
+              echo "🛟 Safety net: Detected usecase/*.tsx, enabling Tailwind wiring."
+            fi
+          fi
+
+          # Helper to add or update a devDependency version in package.json via jq
+          add_dev_dep() {
+            local name="$1"; local version="$2"
+            tmp=$(mktemp)
+            jq --arg n "$name" --arg v "$version" '
+              .devDependencies = (.devDependencies // {}) |
+              .devDependencies[$n] = $v
+            ' package.json > "$tmp" && mv "$tmp" package.json
+            echo "Added devDependency: $name@$version"
+          }
+
+          # Helper to add or update a dependency
+          add_dep() {
+            local name="$1"; local version="$2"
+            tmp=$(mktemp)
+            jq --arg n "$name" --arg v "$version" '
+              .dependencies = (.dependencies // {}) |
+              .dependencies[$n] = $v
+            ' package.json > "$tmp" && mv "$tmp" package.json
+            echo "Added dependency: $name@$version"
+          }
+
+          if $has_index_css || $tailwind_code_detected; then
+            # Detect Tailwind usage and ensure tailwindcss + config
+            if scan "^@tailwind\\s+base;|^@tailwind\\s+components;|^@tailwind\\s+utilities;" src/index.css || $tailwind_code_detected; then
+              if ! jq -e '.devDependencies["tailwindcss"]' package.json >/dev/null 2>&1; then
+                add_dev_dep tailwindcss ^3.4.17
+              fi
+              # Generate a minimal tailwind.config.js (CommonJS) if missing
+              if [ ! -f tailwind.config.ts ] && [ ! -f tailwind.config.js ]; then
+                {
+                  printf "%s\n" \
+                    "module.exports = {" \
+                    "  content: [" \
+                    "    './index.html'," \
+                    "    './src/**/*.{js,jsx,ts,tsx,mdx}'," \
+                    "    './components/**/*.{js,jsx,ts,tsx,mdx}'," \
+                    "    './usecase/**/*.{js,jsx,ts,tsx,mdx}'" \
+                    "  ]," \
+                    "  theme: {" \
+                    "    extend: {}," \
+                    "  }," \
+                    "  plugins: []," \
+                    "}"
+                } > tailwind.config.js
+                echo "Created tailwind.config.js"
+              fi
+              # Ensure src/index.css contains Tailwind directives if not already present
+              if [ ! -f src/index.css ] || ! scan "^@tailwind\\s+base;" src/index.css; then
+                mkdir -p src
+                {
+                  echo "@tailwind base;";
+                  echo "@tailwind components;";
+                  echo "@tailwind utilities;";
+                } > src/index.css
+                echo "Wrote Tailwind directives to src/index.css"
+                has_index_css=true
+              fi
+            fi
+
+            # Detect framework CSS imports and ensure packages
+            if scan "modern-normalize" src/index.css; then
+              if ! jq -e '.devDependencies["modern-normalize"] // .dependencies["modern-normalize"]' package.json >/dev/null 2>&1; then
+                add_dev_dep modern-normalize ^1.1.0
+              fi
+            fi
+            if scan "bootstrap/.+\\.css" src/index.css; then
+              if ! jq -e '.dependencies["bootstrap"] // .devDependencies["bootstrap"]' package.json >/dev/null 2>&1; then
+                add_dep bootstrap ^5.3.3
+              fi
+            fi
+            if scan "bulma/.+\\.css" src/index.css; then
+              if ! jq -e '.dependencies["bulma"] // .devDependencies["bulma"]' package.json >/dev/null 2>&1; then
+                add_dep bulma ^1.0.0
+              fi
+            fi
+            # Additional common CSS frameworks
+            if scan "materialize-css/.+\\.css|materialize\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["materialize-css"] // .devDependencies["materialize-css"]' package.json >/dev/null 2>&1; then
+                add_dep materialize-css ^1.0.0
+              fi
+            fi
+            if scan "foundation-sites/.+\\.css|foundation\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["foundation-sites"] // .devDependencies["foundation-sites"]' package.json >/dev/null 2>&1; then
+                add_dep foundation-sites ^6.7.0
+              fi
+            fi
+            if scan "semantic-ui-css/.+\\.css|semantic\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["semantic-ui-css"] // .devDependencies["semantic-ui-css"]' package.json >/dev/null 2>&1; then
+                add_dep semantic-ui-css ^2.5.0
+              fi
+            fi
+            if scan "normalize\\.css" src/index.css; then
+              if ! jq -e '.devDependencies["normalize.css"] // .dependencies["normalize.css"]' package.json >/dev/null 2>&1; then
+                add_dev_dep normalize.css ^8.0.1
+              fi
+            fi
+            # Icon font CSS packages
+            if scan "bootstrap-icons/.+\\.css|bootstrap-icons\\.css" src/index.css; then
+              if ! jq -e '.dependencies["bootstrap-icons"] // .devDependencies["bootstrap-icons"]' package.json >/dev/null 2>&1; then
+                add_dep bootstrap-icons ^1.11.3
+              fi
+            fi
+            if scan "@fortawesome/fontawesome-free/.+\\.css|all\\.min\\.css" src/index.css; then
+              if ! jq -e '.dependencies["@fortawesome/fontawesome-free"] // .devDependencies["@fortawesome/fontawesome-free"]' package.json >/dev/null 2>&1; then
+                add_dep @fortawesome/fontawesome-free ^6.5.2
+              fi
+            fi
+
+            # Export detection intent for downstream guardrail (Phase 3)
+            if $tailwind_code_detected; then
+              echo "TAILWIND_INTENT=true" >> $GITHUB_ENV
+            else
+              echo "TAILWIND_INTENT=false" >> $GITHUB_ENV
+            fi
+            if [ -n "$tailwind_safety_net_reason" ]; then
+              echo "TAILWIND_SAFETY_NET_REASON=$tailwind_safety_net_reason" >> $GITHUB_ENV
+            fi
+          fi
+
+          # Auto-detect SCSS usage across sources and ensure sass
+          if scan "\\.(scss|sass)\"|\\.(scss|sass)\'|@import[^;]*\\.(scss|sass)" src index.html || scan "\\.(scss|sass)$" src; then
+            if ! jq -e '.devDependencies["sass"] // .dependencies["sass"]' package.json >/dev/null 2>&1; then
+              add_dev_dep sass ^1.77.6
+            fi
+          fi
+
+          # Ensure base PostCSS plugins are present when we write postcss.config.js
+          if ! jq -e '.devDependencies["postcss-import"] // .dependencies["postcss-import"]' package.json >/dev/null 2>&1; then
+            add_dev_dep postcss-import ^15.1.0
+          fi
+          if ! jq -e '.devDependencies["autoprefixer"] // .dependencies["autoprefixer"]' package.json >/dev/null 2>&1; then
+            add_dev_dep autoprefixer ^10.4.21
+          fi
+
+          # Always ensure a valid PostCSS config exists, with optional tailwindcss
+          include_tailwind=false
+          tailwind_plugin_name='tailwindcss'
+          if jq -e '.devDependencies["tailwindcss"] // .dependencies["tailwindcss"]' package.json >/dev/null 2>&1; then
+            include_tailwind=true
+            tv=$(jq -r '.devDependencies["tailwindcss"] // .dependencies["tailwindcss"]' package.json)
+            # If Tailwind v4 is specified, prefer the new @tailwindcss/postcss plugin
+            case "$tv" in
+              '4.'* | '^4'* | '~4'* | '>=4'* | *x* | *latest* ) tailwind_plugin_name='@tailwindcss/postcss' ;;
+              *) tailwind_plugin_name='tailwindcss' ;;
+            esac
+            if [ "$tailwind_plugin_name" = "@tailwindcss/postcss" ]; then
+              if ! jq -e '.devDependencies["@tailwindcss/postcss"] // .dependencies["@tailwindcss/postcss"]' package.json >/dev/null 2>&1; then
+                add_dev_dep @tailwindcss/postcss ^4.0.0
+              fi
+            fi
+          fi
+
+          # Write postcss.config.js without heredocs to avoid YAML indentation issues
+          {
+            printf "%s\n" \
+              "export default {" \
+              "  plugins: {" \
+              "    'postcss-import': {},"
+            if $include_tailwind; then
+              printf "    '%s': {},\n" "$tailwind_plugin_name"
+            fi
+            printf "%s\n" \
+              "    'autoprefixer': {}" \
+              "  }" \
+              "}"
+          } > postcss.config.js
+          echo "Ensured valid postcss.config.js (tailwind: ${include_tailwind}, plugin: ${tailwind_plugin_name})"
+
+          # Also write CommonJS variant for broader tool compatibility
+          {
+            printf "%s\n" \
+              "module.exports = {" \
+              "  plugins: {" \
+              "    'postcss-import': {},"
+            if $include_tailwind; then
+              printf "    '%s': {},\n" "$tailwind_plugin_name"
+            fi
+            printf "%s\n" \
+              "    'autoprefixer': {}" \
+              "  }" \
+              "}"
+          } > postcss.config.cjs
+          echo "Ensured postcss.config.cjs (CommonJS) for compatibility"
+
+          # Ensure src/index.css exists at minimum to avoid Vite CSS pipeline confusion
+          if [ "$has_index_css" = false ]; then
+            mkdir -p src
+            printf "/* Base styles placeholder */\n" > src/index.css
+            echo "Created placeholder src/index.css"
+          fi
+
+          # Ensure the main entry imports index.css so Tailwind styles are bundled
+          main_file=""
+          for f in src/main.tsx src/main.ts src/main.jsx src/main.js; do
+            if [ -f "$f" ]; then
+              main_file="$f"
+              break
+            fi
+          done
+          if [ -n "$main_file" ] && ! grep -q "import './index.css'" "$main_file"; then
+            tmp_main=$(mktemp)
+            {
+              echo "import './index.css'";
+              cat "$main_file";
+            } > "$tmp_main"
+            mv "$tmp_main" "$main_file"
+            echo "Inserted index.css import into $main_file"
+          fi
+
+      - name: Detect and install dependencies
+        working-directory: projects/${{ inputs.project_id }}
+        env:
+          PROJECT_ID: ${{ inputs.project_id }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+        run: |
+          set -euo pipefail
+          echo "Detecting dependencies from sources..."
+          if [ -f "${{ github.workspace }}/.github/scripts/detect-dependencies.js" ]; then
+            DETECT_DEPS_INSTALL=1 DETECT_DEPS_ALLOW_UNSAFE=1 DETECT_DEPS_AUDIT_FILE=dependency-audit.json \
+              node "${{ github.workspace }}/.github/scripts/detect-dependencies.js" . || true
+          else
+            echo "detect-dependencies.js not found; skipping detection"
+          fi
+
+      - name: Send dependency audit event
+        if: always()
+        working-directory: projects/${{ inputs.project_id }}
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -euo pipefail
+          # Check if audit file was created (registry-fallback packages were auto-installed)
+          if [ -f "dependency-audit.json" ]; then
+            echo "📋 Sending dependency auto-install audit to backend..."
+            # POST to backend audit endpoint
+            HTTP_CODE=$(curl -sS -w "%{http_code}" -o /tmp/audit-response.json \
+              -X POST "${CALLBACK_URL}/dependency-audit" \
+              -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d @dependency-audit.json) || true
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+              echo "✅ Audit event sent successfully"
+            else
+              echo "⚠️ Audit event send returned: $HTTP_CODE (non-fatal)"
+              cat /tmp/audit-response.json 2>/dev/null || true
+            fi
+            rm -f dependency-audit.json
+          else
+            echo "ℹ️ No registry-fallback packages; skipping audit"
+          fi
+
+      - name: Preflight TSX parse (esbuild sanity)
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Running esbuild preflight parse on TSX sources..."
+          # Find TSX files in common locations
+          mapfile -t tsx_files < <(find src components usecase -type f -name "*.tsx" 2>/dev/null || true)
+          if [ ${#tsx_files[@]} -eq 0 ]; then
+            echo "No TSX files found; skipping esbuild preflight."
+            exit 0
+          fi
+          # Create temporary directory for esbuild output (handles CSS and other assets)
+          esbuild_tmp=$(mktemp -d)
+          trap "rm -rf '$esbuild_tmp'" EXIT
+          # Use npx to avoid adding dependencies to package.json
+          # Mark all npm packages as external to focus on syntax/structure validation
+          esbuild_ok=true
+          for f in "${tsx_files[@]}"; do
+            echo "- Parsing: $f"
+            if ! npx --yes esbuild "$f" --bundle --format=esm --outdir="$esbuild_tmp" \
+                 --packages=external --log-level=error; then
+              echo "❌ Esbuild failed to parse TSX: $f"
+              esbuild_ok=false
+            fi
+          done
+          $esbuild_ok || { echo "Preflight TSX parse failed"; exit 1; }
+
+      - name: Build project
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Building project..."
+          echo "Framework: ${FRAMEWORK:-auto}"
+          
+          # Check if this is a framework project with package.json
+          if [ -f "package.json" ] && grep -q '"build"' package.json; then
+            echo "Installing dependencies..."
+            if [ -f "package-lock.json" ]; then
+              npm ci --no-audit --no-fund
+            else
+              npm install --no-audit --no-fund
+            fi
+            
+            echo "Enforcing relative base for Vite (subpath-safe)..."
+            if [ -f "${{ github.workspace }}/scripts/ensure-relative-base.mjs" ]; then
+              node "${{ github.workspace }}/scripts/ensure-relative-base.mjs"
+            else
+              echo "⚠️ ensure-relative-base.mjs not found, skipping enforcement"
+            fi
+            
+            echo "Running build..."
+            # Prefer our React config when present to avoid config ambiguity and ensure plugin-react is applied
+            if jq -e '.dependencies.react // .devDependencies.react' package.json >/dev/null 2>&1 && [ -f vite.config.mjs ]; then
+              echo "React detected and vite.config.mjs present; running: npx vite build --config vite.config.mjs"
+              npx vite build --config vite.config.mjs
+            else
+              npm run build
+            fi
+            
+            # Verify build output
+            if [ ! -d "dist" ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
+              echo "ERROR: No build output found in dist/"
+              exit 1
+            fi
+            
+            # Guard: ensure at least one JS asset was emitted (avoid "green" builds with only index.html)
+            if ! find dist -type f \( -name "*.js" -o -name "*.mjs" \) -print -quit | grep -q .; then
+              echo "ERROR: No JS assets emitted in dist/ (likely nothing was compiled)."
+              echo "dist/ contents:"; ls -la dist || true
+              exit 1
+            fi
+            
+            # Check for root-relative paths and rewrite to relative
+            if [ -f "dist/index.html" ]; then
+              if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
+                echo "⚠️ Found absolute paths in dist/index.html, fixing..."
+                sed -i -e 's#src="/#src="./#g' -e 's#href="/#href="./#g' dist/index.html
+                if grep -q 'src="/' dist/index.html || grep -q 'href="/' dist/index.html; then
+                  echo "ERROR: Found root-relative URLs in index.html after rewrite"
+                  exit 1
+                fi
+              else
+                echo "✅ Paths are already relative"
+              fi
+            fi
+          else
+            echo "No framework detected, using static build..."
+            rm -rf dist
+            mkdir -p dist
+            cp -f index.html dist/index.html
+            if [ -d public ]; then cp -r public/. dist/; fi
+            if [ -d src ]; then mkdir -p dist/src && cp -r src/. dist/src/; fi
+            node ../../scripts/rewrite-root-paths.mjs dist
+            if grep -R 'href="/' dist >/dev/null || grep -R 'src="/' dist >/dev/null || grep -R 'url(/' dist >/dev/null; then
+              echo "ERROR: Found root-relative URLs after rewrite"
+              exit 1
+            fi
+          fi
+          
+          test -f dist/index.html
+          echo "Build output:"
+          ls -la dist/
+
+      - name: Validate CSS output (Tailwind guardrail)
+        working-directory: projects/${{ inputs.project_id }}
+        run: |
+          set -euo pipefail
+          echo "Running Tailwind CSS guardrail validation..."
+          # Act local runner often differs in PostCSS loading; skip guardrail under act
+          if [ "${ACT:-}" = "true" ]; then
+            echo "ACT environment detected; skipping Tailwind guardrail locally."
+            exit 0
+          fi
+          if [ "${TAILWIND_INTENT:-false}" != "true" ]; then
+            echo "No Tailwind intent detected; skipping guardrail."
+            exit 0
+          fi
+
+          if [ ! -d dist ]; then
+            echo "ERROR: dist/ missing; cannot validate CSS."
+            exit 1
+          fi
+
+          # Sum total CSS size across dist
+          total_css_bytes=0
+          while IFS= read -r -d '' f; do
+            sz=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+            total_css_bytes=$(( total_css_bytes + sz ))
+          done < <(find dist -type f -name "*.css" -print0)
+          echo "Total built CSS size: ${total_css_bytes} bytes"
+
+          # Build representative selector patterns
+          # Prefer scanning source for concrete utilities; fallback to generic set
+          selector_hit=false
+          tmp_css=$(mktemp)
+          cat $(find dist -type f -name "*.css") > "$tmp_css" || true
+
+          # Try to extract a few concrete class names from sources
+          sample_classes=""
+            if command -v rg >/dev/null 2>&1; then
+              sample_classes=$(rg -o -S --no-filename \
+                "(text-[a-z]+-\d+|bg-[a-z-]+-\d+|rounded(?:-[a-z0-9]+)?|ring-\d+|shadow(?:-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(?:-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" \
+                src components usecase index.html 2>/dev/null | head -n 10 | tr '\n' ' ' || true)
+            else
+              sample_classes=$(grep -R -h -E "(text-[a-z]+-[0-9]+|bg-[a-z-]+-[0-9]+|rounded(-[a-z0-9]+)?|ring-[0-9]+|shadow(-[a-z0-9]+)?|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|backdrop-blur(-[a-z0-9]+)?|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex)" src components usecase index.html 2>/dev/null | head -n 10 | tr '\n' ' ' || true)
+            fi
+
+          # Always add a few common representatives for safety
+          sample_classes="$sample_classes text-emerald-300 bg-indigo-500 rounded-2xl"
+
+          for cls in $sample_classes; do
+            # Use fixed-string match to avoid sed/regex escaping pitfalls across environments
+            if grep -Fq ".${cls}" "$tmp_css"; then
+              echo "Found Tailwind selector in CSS: .$cls"
+              selector_hit=true
+              break
+            fi
+          done
+
+          rm -f "$tmp_css"
+
+          if [ "$selector_hit" = false ] && [ "${total_css_bytes}" -lt 20000 ]; then
+            echo "❌ Guardrail: Tailwind utilities were detected in sources, but built CSS looks too small and contains no representative Tailwind selectors."
+            echo "Hint: Ensure Tailwind plugin is active in postcss.config.js and content globs include src/, components/, and usecase/."
+            exit 1
+          fi
+          echo "✅ Tailwind guardrail passed."
+
+      - name: Prepare artifacts
+        run: |
+          set -euo pipefail
+          cp -r "projects/${{ inputs.project_id }}/dist/." "artifacts/${{ inputs.project_id }}/"
+          test -f "artifacts/${{ inputs.project_id }}/index.html"
+
+      - name: Create tarball of build artifacts
+        run: |
+          set -euo pipefail
+          echo "Creating tarball of build artifacts..."
+          tar -czf "build-${{ inputs.project_id }}.tar.gz" -C artifacts "${{ inputs.project_id }}"
+          ls -lh "build-${{ inputs.project_id }}.tar.gz"
+          echo "ARTIFACT_SIZE=$(stat -c%s "build-${{ inputs.project_id }}.tar.gz")" >> $GITHUB_ENV
+
+      - name: Upload artifacts to GitHub (for backup)
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ inputs.project_id }}
+          path: artifacts/${{ inputs.project_id }}/
+          retention-days: 1
+
+      - name: Send build artifacts to Worker for R2 upload
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -euo pipefail
+          echo "Sending build artifacts to Worker for R2 upload..."
+          echo "This bypasses GitHub's secret masking by handling R2 upload in Worker"
+          
+          # Create the tar.gz in memory and send directly to Worker
+          # Worker will handle R2 upload using its environment bindings
+          tar -czf - -C artifacts "${{ inputs.project_id }}" | \
+          curl -sS -X POST "$CALLBACK_URL/upload" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -H "X-Project-ID: ${{ inputs.project_id }}" \
+            -H "X-GitHub-Run-ID: ${{ github.run_id }}" \
+            -H "X-GitHub-Run-URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -H "X-Correlation-ID: ${{ inputs.correlation_id }}" \
+            -H "X-Framework: ${FRAMEWORK:-auto}" \
+            -H "Content-Type: application/tar+gzip" \
+            --data-binary @- \
+            -o response.json
+          
+          # Check response from Worker
+          if jq -e '.success' response.json > /dev/null; then
+            echo "✅ Build artifacts successfully sent to Worker"
+            echo "Worker will now handle R2 upload with native bindings"
+            jq . response.json
+            # Capture R2 path from response for accurate success callback
+            R2_PATH=$(jq -r '.r2_path // .data.r2_path // empty' response.json)
+            if [ -n "${R2_PATH}" ]; then
+              echo "R2_PATH=${R2_PATH}" >> $GITHUB_ENV
+              echo "Detected R2 path from upload response: ${R2_PATH}"
+            else
+              echo "WARNING: R2 path not found in upload response; will fall back to builds/${{ inputs.project_id }}/dist/"
+            fi
+          else
+            echo "❌ Failed to send artifacts to Worker"
+            jq . response.json
+            exit 1
+          fi
+
+      - name: Success callback
+        if: success()
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -euo pipefail
+          echo "Sending success callback to Worker..."
+          # Prefer R2 path returned by upload step; fallback to legacy dist path
+          R2_PATH_VALUE=${R2_PATH:-}
+          if [ -z "${R2_PATH_VALUE}" ]; then
+            R2_PATH_VALUE="builds/${{ inputs.project_id }}/dist/"
+          fi
+          BODY=$(jq -n \
+            --arg status "success" \
+            --arg pid "${{ inputs.project_id }}" \
+            --arg rid "${{ github.run_id }}" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg framework "${FRAMEWORK:-auto}" \
+            --arg r2_path "${R2_PATH_VALUE}" \
+            '{status:$status, project_id:$pid, framework:$framework, github_run_id:$rid, github_run_url:$run_url, r2_build_path:$r2_path}')
+          
+          curl -sS -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -d "$BODY" \
+            -o callback_response.json
+          
+          echo "✅ Success callback sent to Worker"
+          echo "Callback response:"
+          jq . callback_response.json 2>/dev/null || cat callback_response.json
+
+      - name: Failure callback
+        if: failure()
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          set -euo pipefail
+          BODY=$(jq -n \
+            --arg status "failure" \
+            --arg pid "${{ inputs.project_id }}" \
+            --arg rid "${{ github.run_id }}" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg framework "${FRAMEWORK:-auto}" \
+            '{status:$status, project_id:$pid, framework:$framework, github_run_id:$rid, github_run_url:$run_url}')
+          curl -sS -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CALLBACK_TOKEN" \
+            -d "$BODY"
