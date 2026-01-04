@@ -13,6 +13,10 @@ on:
         description: JSON object of files (path -> content)
         required: true
         type: string
+      source_files_url:
+        description: Optional URL for large source_files payloads
+        required: false
+        type: string
       callback_url:
         description: Worker v2 callback URL
         required: true
@@ -85,9 +89,16 @@ jobs:
         working-directory: projects/${{ inputs.project_id }}
         env:
           SOURCE_FILES: ${{ inputs.source_files }}
+          SOURCE_FILES_URL: ${{ inputs.source_files_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
         run: |
           set -euo pipefail
-          echo "$SOURCE_FILES" > source.json
+          if [ -n "${SOURCE_FILES_URL}" ]; then
+            echo "Downloading source files from URL..."
+            curl -fsSL -H "Authorization: Bearer ${CALLBACK_TOKEN}" "${SOURCE_FILES_URL}" -o source.json
+          else
+            echo "$SOURCE_FILES" > source.json
+          fi
           jq -e . source.json >/dev/null
           jq -r 'to_entries[] | @base64' source.json | while read -r row; do
             key=$(echo "$row" | base64 --decode | jq -r '.key')
