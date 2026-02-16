@@ -26,7 +26,7 @@ on:
         required: true
         type: string
       framework:
-        description: Framework type (react|vue|svelte|auto)
+        description: Framework type (react|vue|svelte|html|auto)
         required: false
         type: string
         default: 'auto'
@@ -299,6 +299,10 @@ jobs:
         working-directory: projects/${{ inputs.project_id }}
         run: |
           set -euo pipefail
+          if [ "${FRAMEWORK:-auto}" = "html" ]; then
+            echo "Framework explicitly set to html; skipping React Vite config provisioning"
+            exit 0
+          fi
           # If this looks like a React project but no config contains the React plugin, provide vite.config.mjs
           is_react=false
           if [ -f package.json ] && jq -e '.dependencies.react // .devDependencies.react' package.json >/dev/null 2>&1; then
@@ -768,11 +772,22 @@ jobs:
               exit 1
             fi
             
-            # Guard: ensure at least one JS asset was emitted (avoid "green" builds with only index.html)
-            if ! find dist -type f \( -name "*.js" -o -name "*.mjs" \) -print -quit | grep -q .; then
-              echo "ERROR: No JS assets emitted in dist/ (likely nothing was compiled)."
-              echo "dist/ contents:"; ls -la dist || true
-              exit 1
+            # Guard: ensure JS assets exist only when the output actually references local JS modules.
+            expect_js_assets=true
+            if [ "${FRAMEWORK:-auto}" = "html" ]; then
+              expect_js_assets=false
+            elif [ -f "dist/index.html" ] && ! grep -E '<script[^>]+type=["'"'"']module["'"'"'][^>]+src=["'"'"'][^"'"'"']+\.(js|mjs)[^"'"'"']*["'"'"']' dist/index.html >/dev/null 2>&1; then
+              expect_js_assets=false
+            fi
+
+            if $expect_js_assets; then
+              if ! find dist -type f \( -name "*.js" -o -name "*.mjs" \) -print -quit | grep -q .; then
+                echo "ERROR: No JS assets emitted in dist/ (likely nothing was compiled)."
+                echo "dist/ contents:"; ls -la dist || true
+                exit 1
+              fi
+            else
+              echo "Skipping JS asset guard for static HTML output."
             fi
             
             # Check for root-relative paths and rewrite to relative
@@ -818,6 +833,13 @@ jobs:
           fi
           if [ "${TAILWIND_INTENT:-false}" != "true" ]; then
             echo "No Tailwind intent detected; skipping guardrail."
+            exit 0
+          fi
+
+          # Static HTML projects may intentionally use Tailwind via CDN.
+          # In that case no local Tailwind CSS bundle is expected in dist/.
+          if [ -f index.html ] && grep -q "cdn.tailwindcss.com" index.html; then
+            echo "Tailwind CDN detected in index.html; skipping compiled CSS guardrail."
             exit 0
           fi
 
