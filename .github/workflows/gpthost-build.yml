@@ -836,6 +836,13 @@ jobs:
             exit 0
           fi
 
+          # Static HTML projects may intentionally use Tailwind via CDN.
+          # In that case no local Tailwind CSS bundle is expected in dist/.
+          if [ -f index.html ] && grep -q "cdn.tailwindcss.com" index.html; then
+            echo "Tailwind CDN detected in index.html; skipping compiled CSS guardrail."
+            exit 0
+          fi
+
           if [ ! -d dist ]; then
             echo "ERROR: dist/ missing; cannot validate CSS."
             exit 1
