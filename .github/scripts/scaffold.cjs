@@ -134,7 +134,14 @@ function detectFramework() {
       }
     }
   }
-  
+
+  // If we have a plain index.html and no framework markers, treat it as static HTML.
+  // This avoids forcing React scaffolding for v1e HTML rewrites.
+  if (fs.existsSync(path.join(projectPath, 'index.html'))) {
+    console.log('Found index.html without framework markers; treating as static HTML');
+    return 'html';
+  }
+
   console.log('No framework detected');
   return null;
 }
@@ -161,6 +168,9 @@ switch (targetFramework) {
     break;
   case 'svelte':
     scaffoldSvelte();
+    break;
+  case 'html':
+    scaffoldHtml();
     break;
   default:
     console.error(`Unknown framework: ${targetFramework}`);
@@ -405,6 +415,24 @@ export default app
 </style>
 `);
   }
+}
+
+function scaffoldHtml() {
+  console.log('Static HTML project detected. Skipping framework scaffolding.');
+
+  // Keep behavior safe if index.html is unexpectedly missing.
+  writeFileIfNotExists('index.html', `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPTHost Static Site</title>
+</head>
+<body>
+  <main>GPTHost static HTML project</main>
+</body>
+</html>
+`);
 }
 
 console.log('Scaffolding complete!');
