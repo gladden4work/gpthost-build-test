@@ -430,16 +430,19 @@ jobs:
           # This covers uploads that only contain TSX/JSX files (no CSS yet),
           # like usecase/* components produced by GPTHost.
           tailwind_code_detected=false
+          # Require utility tokens to appear as full class tokens to avoid false positives
+          # from custom class names like "coffee-ring-2" or "text-input".
+          tailwind_utility_token="(^|[[:space:]])(md:|lg:|xl:)?(bg-[a-z-]+-[0-9]{2,3}|text-(xs|sm|base|lg|xl|[2-9]xl|[a-z-]+-[0-9]{2,3})|from-[a-z-]+-[0-9]{2,3}|to-[a-z-]+-[0-9]{2,3}|via-[a-z-]+-[0-9]{2,3}|rounded(-(none|sm|md|lg|xl|2xl|3xl|full))?|shadow(-(sm|md|lg|xl|2xl|inner|none))?|ring-[0-9]+|space-[xy]-[0-9]+|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|sticky|backdrop-blur(-[a-z0-9]+)?|col-span-[0-9]+|row-span-[0-9]+)($|[[:space:]])"
           # Attribute with single/double quotes
-          if scan_code "(class|className)\\s*=\\s*['\"]([^'\"]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span))"; then
+          if scan_code "(class|className)\\s*=\\s*['\"][^'\"]*${tailwind_utility_token}"; then
             tailwind_code_detected=true
           fi
           # Attribute with template literal backticks
-          if ! $tailwind_code_detected && scan_code "(class|className)\\s*=\\s*`[^`]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span)"; then
+          if ! $tailwind_code_detected && scan_code "(class|className)\\s*=\\s*\\`[^\\`]*${tailwind_utility_token}"; then
             tailwind_code_detected=true
           fi
           # Variable-held class strings (const/let/var = '...' or "..." or `...`)
-          if ! $tailwind_code_detected && scan_code "\\b(const|let|var)\\s+\\w+\\s*=\\s*(['\"`])[^'\"`]*\\b(md:|lg:|xl:)?(bg-|text-|from-|to-|via-|rounded|shadow|ring-|space-[xy]-|p[trblxy]?-|m[trblxy]?-|grid|flex|min-h-|max-w-|mx-auto|sticky|backdrop-blur|col-span|row-span)"; then
+          if ! $tailwind_code_detected && scan_code "\\b(const|let|var)\\s+\\w+\\s*=\\s*(['\\\"\\`])[^'\\\"\\`]*${tailwind_utility_token}"; then
             tailwind_code_detected=true
           fi
 
@@ -826,6 +829,20 @@ jobs:
         run: |
           set -euo pipefail
           echo "Running Tailwind CSS guardrail validation..."
+          scan_guardrail_code() {
+            local pattern="$1"; shift || true
+            local roots=(src usecase components index.html)
+            if [ "$#" -gt 0 ]; then
+              roots=("$@")
+            fi
+            if command -v rg >/dev/null 2>&1; then
+              rg -q -n -S -e "$pattern" -g "*.{js,jsx,ts,tsx,mdx,html}" "${roots[@]}" 2>/dev/null
+            else
+              grep -R -q -n -E "$pattern" \
+                --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.mdx' --include='*.html' \
+                "${roots[@]}" 2>/dev/null
+            fi
+          }
           # Act local runner often differs in PostCSS loading; skip guardrail under act
           if [ "${ACT:-}" = "true" ]; then
             echo "ACT environment detected; skipping Tailwind guardrail locally."
@@ -833,6 +850,24 @@ jobs:
           fi
           if [ "${TAILWIND_INTENT:-false}" != "true" ]; then
             echo "No Tailwind intent detected; skipping guardrail."
+            exit 0
+          fi
+
+          # Re-check intent using strict utility-token matching so stale/legacy false positives
+          # don't fail non-Tailwind static HTML projects.
+          strict_tailwind_intent=false
+          strict_tailwind_token="(^|[[:space:]])(md:|lg:|xl:)?(bg-[a-z-]+-[0-9]{2,3}|text-(xs|sm|base|lg|xl|[2-9]xl|[a-z-]+-[0-9]{2,3})|from-[a-z-]+-[0-9]{2,3}|to-[a-z-]+-[0-9]{2,3}|via-[a-z-]+-[0-9]{2,3}|rounded(-(none|sm|md|lg|xl|2xl|3xl|full))?|shadow(-(sm|md|lg|xl|2xl|inner|none))?|ring-[0-9]+|space-[xy]-[0-9]+|p[trblxy]?-[0-9]+|m[trblxy]?-[0-9]+|grid|flex|min-h-[a-z0-9-]+|max-w-[a-z0-9-]+|mx-auto|sticky|backdrop-blur(-[a-z0-9]+)?|col-span-[0-9]+|row-span-[0-9]+)($|[[:space:]])"
+          if scan_guardrail_code "(class|className)\\s*=\\s*['\"][^'\"]*${strict_tailwind_token}"; then
+            strict_tailwind_intent=true
+          fi
+          if ! $strict_tailwind_intent && scan_guardrail_code "(class|className)\\s*=\\s*\\`[^\\`]*${strict_tailwind_token}"; then
+            strict_tailwind_intent=true
+          fi
+          if ! $strict_tailwind_intent && scan_guardrail_code "\\b(const|let|var)\\s+\\w+\\s*=\\s*(['\\\"\\`])[^'\\\"\\`]*${strict_tailwind_token}"; then
+            strict_tailwind_intent=true
+          fi
+          if [ "$strict_tailwind_intent" != "true" ]; then
+            echo "Tailwind guardrail: skipped (TAILWIND_INTENT=true but strict utility-token scan found no Tailwind classes)."
             exit 0
           fi
 
@@ -862,6 +897,12 @@ jobs:
           tmp_css=$(mktemp)
           cat $(find dist -type f -name "*.css") > "$tmp_css" || true
 
+          # Tailwind outputs CSS variables prefixed with --tw- across generated utilities.
+          if grep -Fq -- "--tw-" "$tmp_css"; then
+            echo "Found Tailwind core variables (--tw-) in compiled CSS."
+            selector_hit=true
+          fi
+
           # Try to extract a few concrete class names from sources
           sample_classes=""
             if command -v rg >/dev/null 2>&1; then
@@ -875,14 +916,16 @@ jobs:
           # Always add a few common representatives for safety
           sample_classes="$sample_classes text-emerald-300 bg-indigo-500 rounded-2xl"
 
-          for cls in $sample_classes; do
-            # Use fixed-string match to avoid sed/regex escaping pitfalls across environments
-            if grep -Fq ".${cls}" "$tmp_css"; then
-              echo "Found Tailwind selector in CSS: .$cls"
-              selector_hit=true
-              break
-            fi
-          done
+          if [ "$selector_hit" = false ]; then
+            for cls in $sample_classes; do
+              # Use fixed-string match to avoid sed/regex escaping pitfalls across environments
+              if grep -Fq ".${cls}" "$tmp_css"; then
+                echo "Found Tailwind selector in CSS: .$cls"
+                selector_hit=true
+                break
+              fi
+            done
+          fi
 
           rm -f "$tmp_css"
 
