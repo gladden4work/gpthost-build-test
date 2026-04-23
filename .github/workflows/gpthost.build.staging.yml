@@ -813,7 +813,7 @@ jobs:
             cp -f index.html dist/index.html
             if [ -d public ]; then cp -r public/. dist/; fi
             if [ -d src ]; then mkdir -p dist/src && cp -r src/. dist/src/; fi
-            node ../../scripts/rewrite-root-paths.mjs dist
+            node "${{ github.workspace }}/scripts/rewrite-root-paths.mjs" dist
             if grep -R 'href="/' dist >/dev/null || grep -R 'src="/' dist >/dev/null || grep -R 'url(/' dist >/dev/null; then
               echo "ERROR: Found root-relative URLs after rewrite"
               exit 1
