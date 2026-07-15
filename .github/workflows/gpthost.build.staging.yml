@@ -22,8 +22,8 @@ on:
         required: true
         type: string
       callback_token:
-        description: Bearer token for callback
-        required: true
+        description: Deprecated; callback authentication now uses a repository secret
+        required: false
         type: string
       framework:
         description: Framework type (react|vue|svelte|html|auto)
@@ -51,7 +51,6 @@ env:
   PROJECT_ID: ${{ inputs.project_id }}
   FRAMEWORK: ${{ inputs.framework }}
   CALLBACK_URL: ${{ inputs.callback_url }}
-  CALLBACK_TOKEN: ${{ inputs.callback_token }}
 
 concurrency:
   group: build-${{ github.event.inputs.project_id }}
@@ -90,7 +89,7 @@ jobs:
         env:
           SOURCE_FILES: ${{ inputs.source_files }}
           SOURCE_FILES_URL: ${{ inputs.source_files_url }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          CALLBACK_TOKEN: ${{ secrets.GPTHOST_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           if [ -n "${SOURCE_FILES_URL}" ]; then
@@ -686,7 +685,7 @@ jobs:
         working-directory: projects/${{ inputs.project_id }}
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          CALLBACK_TOKEN: ${{ secrets.GPTHOST_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           # Check if audit file was created (registry-fallback packages were auto-installed)
@@ -946,7 +945,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Creating tarball of build artifacts..."
-          tar -czf "build-${{ inputs.project_id }}.tar.gz" -C artifacts "${{ inputs.project_id }}"
+          tar --format=ustar -czf "build-${{ inputs.project_id }}.tar.gz" -C artifacts "${{ inputs.project_id }}"
           ls -lh "build-${{ inputs.project_id }}.tar.gz"
           echo "ARTIFACT_SIZE=$(stat -c%s "build-${{ inputs.project_id }}.tar.gz")" >> $GITHUB_ENV
 
@@ -961,7 +960,7 @@ jobs:
       - name: Send build artifacts to Worker for R2 upload
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          CALLBACK_TOKEN: ${{ secrets.GPTHOST_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           echo "Sending build artifacts to Worker for R2 upload..."
@@ -969,7 +968,7 @@ jobs:
           
           # Create the tar.gz in memory and send directly to Worker
           # Worker will handle R2 upload using its environment bindings
-          tar -czf - -C artifacts "${{ inputs.project_id }}" | \
+          tar --format=ustar -czf - -C artifacts "${{ inputs.project_id }}" | \
           curl -sS -X POST "$CALLBACK_URL/upload" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
             -H "X-Project-ID: ${{ inputs.project_id }}" \
@@ -1004,7 +1003,7 @@ jobs:
         if: success()
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          CALLBACK_TOKEN: ${{ secrets.GPTHOST_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           echo "Sending success callback to Worker..."
@@ -1036,7 +1035,7 @@ jobs:
         if: failure()
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          CALLBACK_TOKEN: ${{ secrets.GPTHOST_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           BODY=$(jq -n \
