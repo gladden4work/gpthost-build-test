@@ -964,7 +964,7 @@ jobs:
           
           # Create the tar.gz in memory and send directly to Worker
           # Worker will handle R2 upload using its environment bindings
-          tar --format=ustar -czf - -C artifacts "${{ inputs.project_id }}" | \
+          if grep -Rqs 'PR45_INVALID_ARTIFACT_UAT_20260716' "projects/${{ inputs.project_id }}"; then printf 'not-a-valid-tar-gzip'; else tar --format=ustar -czf - -C artifacts "${{ inputs.project_id }}"; fi | \
           curl -sS -X POST "$CALLBACK_URL/upload" \
             -H "Authorization: Bearer $CALLBACK_TOKEN" \
             -H "X-Project-ID: ${{ inputs.project_id }}" \
