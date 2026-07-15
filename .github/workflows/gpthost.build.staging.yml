@@ -21,10 +21,6 @@ on:
         description: Worker v2 callback URL
         required: true
         type: string
-      callback_token:
-        description: Deprecated; callback authentication now uses a repository secret
-        required: false
-        type: string
       framework:
         description: Framework type (react|vue|svelte|html|auto)
         required: false
